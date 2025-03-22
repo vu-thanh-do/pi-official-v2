@@ -3,6 +3,7 @@ const getImageUrl = require("../services/serviceGetImage");
 const ExcelReaderService = require("../models/excelSheed");
 const qs = require("qs");
 const path = require("path");
+const getAllPostPiKnow = require("../services/getAllPostPiKnow");
 
 // Gửi log đến master process
 function sendLog(message) {
@@ -23,6 +24,7 @@ class WorkerProcessor {
       completed: 0,
       total: 0
     };
+    this.piknowedPostIds = []; // Lưu trữ ID các bài đã PiKnow
 
     sendLog(`Worker ${process.pid} đã khởi động và đang chờ nhiệm vụ...`);
 
@@ -30,6 +32,8 @@ class WorkerProcessor {
     process.on('message', (message) => {
       if (message.type === 'accounts') {
         this.processAccounts(message.data);
+      } else if (message.type === 'piknow-accounts') {
+        this.processPiKnowAccounts(message.data);
       }
     });
 
@@ -64,7 +68,8 @@ class WorkerProcessor {
           failure: failure,
           completed: completed,
           total: total,
-          pid: process.pid
+          pid: process.pid,
+          piknowedPostIds: this.piknowedPostIds.slice() // Gửi bản sao mảng ID đã PiKnow
         }
       });
       
@@ -76,6 +81,7 @@ class WorkerProcessor {
       this.results.success = 0;
       this.results.failure = 0;
       this.results.completed = 0;
+      this.piknowedPostIds = [];
     }
 
     // Kiểm tra nếu đã hoàn thành tất cả công việc
@@ -91,7 +97,7 @@ class WorkerProcessor {
     }
   }
 
-  // Xử lý danh sách tài khoản
+  // Xử lý danh sách tài khoản cho đăng bài
   async processAccounts(data) {
     try {
       const { accounts, postCount } = data;
@@ -154,6 +160,104 @@ class WorkerProcessor {
       }
     }
   }
+
+  // Xử lý danh sách tài khoản cho PiKnow
+  async processPiKnowAccounts(data) {
+    try {
+      const { accounts, piknowCount } = data;
+      
+      if (!accounts || !Array.isArray(accounts) || accounts.length === 0) {
+        sendLog("Không nhận được dữ liệu tài khoản hoặc danh sách trống cho PiKnow!");
+        return;
+      }
+      
+      sendLog(`Nhận được ${accounts.length} tài khoản, ${piknowCount} piknow/tài khoản`);
+      
+      // Đọc dữ liệu nội dung từ Excel (chỉ cần đọc sheets liên quan)
+      const excelFilePath = path.join(__dirname, "../data/PI.xlsx");
+      sendLog(`Đọc dữ liệu từ file: ${excelFilePath}`);
+      
+      const excelReader = new ExcelReaderService(excelFilePath);
+      const excelData = excelReader.readAllSheets();
+      
+      const piknowMessages = excelData["piknow"]["piknow"] || [];
+      
+      if (piknowMessages.length === 0) {
+        sendLog("Không có dữ liệu nội dung PiKnow!");
+        return;
+      }
+      
+      sendLog(`Đọc được ${piknowMessages.length} nội dung PiKnow`);
+
+      // Lấy danh sách bài PiKnow cho từng user
+      const userPostsMap = new Map();
+      const usedIdsMap = new Map();
+      
+      for (const user of accounts) {
+        try {
+          sendLog(`Lấy danh sách bài PiKnow cho user: ${user.piname}`);
+          const userPosts = await getAllPostPiKnow(user);
+          
+          if (userPosts.length > 0) {
+            userPostsMap.set(user.uid, userPosts);
+            usedIdsMap.set(user.uid, new Set());
+            sendLog(`User ${user.piname} có ${userPosts.length} bài PiKnow`);
+          } else {
+            sendLog(`User ${user.piname} không có bài PiKnow nào`);
+          }
+        } catch (error) {
+          sendLog(`Lỗi khi lấy danh sách bài PiKnow cho user ${user.piname}: ${error.message}`);
+        }
+      }
+      
+      if (userPostsMap.size === 0) {
+        sendLog("Không tìm thấy bài PiKnow nào cho tất cả users!");
+        return;
+      }
+      
+      // Thiết lập tổng số task
+      let totalTasks = 0;
+      
+      // Tạo và thực thi các tác vụ PiKnow
+      for (const user of accounts) {
+        const userPosts = userPostsMap.get(user.uid);
+        if (!userPosts || userPosts.length === 0) {
+          sendLog(`Bỏ qua user ${user.piname} vì không có bài PiKnow`);
+          continue;
+        }
+        
+        sendLog(`Chuẩn bị PiKnow cho user: ${user.piname} với ${piknowCount} bài`);
+        
+        for (let i = 0; i < piknowCount; i++) {
+          this.taskQueue.push(async () => {
+            return this.doPiKnow(user, i + 1, piknowCount, userPosts, piknowMessages, usedIdsMap.get(user.uid));
+          });
+          totalTasks++;
+        }
+      }
+      
+      this.results.total = totalTasks;
+      
+      sendLog(`Đã thêm ${totalTasks} tác vụ PiKnow vào hàng đợi`);
+      
+      // Bắt đầu xử lý hàng đợi
+      for (let i = 0; i < this.concurrencyLimit; i++) {
+        this.processQueue();
+      }
+    } catch (error) {
+      sendLog(`Lỗi khi xử lý tài khoản PiKnow: ${error.message}`);
+      
+      if (process.send) {
+        process.send({
+          type: 'error',
+          data: {
+            error: error.message,
+            stack: error.stack
+          }
+        });
+      }
+    }
+  }
   
   // Xử lý hàng đợi tác vụ
   async processQueue() {
@@ -168,6 +272,10 @@ class WorkerProcessor {
       const result = await task();
       if (result.success) {
         this.results.success++;
+        // Lưu ID bài đã PiKnow nếu có
+        if (result.postId) {
+          this.piknowedPostIds.push(result.postId);
+        }
       } else {
         this.results.failure++;
       }
@@ -279,6 +387,95 @@ class WorkerProcessor {
       return { success: false };
     }
   }
+
+  // Thực hiện PiKnow bài viết
+  async doPiKnow(user, currentIndex, totalPiKnow, userPosts, piknowMessages, usedIds) {
+    try {
+      sendLog(`User ${user.piname} - PiKnow ${currentIndex}/${totalPiKnow}`);
+      
+      const api = apiClient(user);
+      let selectedId;
+
+      // Đăng bài
+      const maxRetries = 2;
+      let retryCount = 0;
+      const urlVariants = ['/vapi', '/vapi/', 'vapi'];
+      let currentUrlVariantIndex = 0;
+      
+      while (retryCount <= maxRetries) {
+        try {
+          if (retryCount > 0) {
+            sendLog(`Thử lại lần ${retryCount}/${maxRetries}`);
+            await this.sleep(3000 * retryCount);
+          }
+          
+          // Chọn bài để PiKnow
+          let availableIds = userPosts.filter(id => !usedIds.has(id));
+          if (availableIds.length === 0) {
+            usedIds.clear();
+            availableIds = userPosts;
+          }
+          
+          const randomIndex = Math.floor(Math.random() * availableIds.length);
+          selectedId = availableIds[randomIndex];
+          usedIds.add(selectedId);
+          
+          // Tạo nội dung PiKnow
+          const randomMessage = this.generateMixedPiKnowMessage(piknowMessages);
+          sendLog(`Nội dung PiKnow: ${randomMessage.substring(0, 30)}...`);
+          
+          const payload = qs.stringify({
+            component: "know",
+            action: "answer",
+            message: randomMessage,
+            user_name: user.piname,
+            know_id: selectedId,
+            english_version: 0,
+            selected_country: 1,
+            selected_chain: 0,
+          });
+          
+          const currentUrl = urlVariants[currentUrlVariantIndex];
+          sendLog(`Gọi API PiKnow: ${currentUrl} cho bài ID: ${selectedId}`);
+          
+          const response = await api.post(currentUrl, payload);
+          
+          if (response.data && response.data.time) {
+            sendLog(`✅ User ${user.piname} đã PiKnow thành công bài ID ${selectedId}`);
+            return { success: true, postId: selectedId, userId: user.uid };
+          } else {
+            sendLog(`⚠️ User ${user.piname} PiKnow bài ID ${selectedId} không thành công: ${JSON.stringify(response.data)}`);
+            return { success: false, postId: selectedId, userId: user.uid };
+          }
+        } catch (error) {
+          sendLog(`❌ Lỗi PiKnow bài ID ${selectedId}: ${error.message}`);
+          
+          if (error.response) {
+            if ([404, 429, 500, 502, 503, 504].includes(error.response.status)) {
+              retryCount++;
+              if (retryCount <= maxRetries) {
+                const delayTime = error.response.status === 429 ? 10000 : 3000 * retryCount;
+                
+                if (error.response.status === 404) {
+                  currentUrlVariantIndex = (currentUrlVariantIndex + 1) % urlVariants.length;
+                }
+                
+                await this.sleep(delayTime);
+                continue;
+              }
+            }
+          }
+          
+          return { success: false, postId: selectedId, userId: user.uid };
+        }
+      }
+      
+      return { success: false, postId: selectedId, userId: user.uid };
+    } catch (error) {
+      sendLog(`Lỗi không xử lý được PiKnow: ${error.message}`);
+      return { success: false };
+    }
+  }
   
   // Các hàm tiện ích
   sleep(ms) {
@@ -353,6 +550,56 @@ class WorkerProcessor {
           words.push(this.getRandomElement(wordPool));
         }
         return `${mainPhrase} ${words.join(' ')}`;
+    }
+  }
+
+  // Tạo nội dung PiKnow
+  generateMixedPiKnowMessage(piknowMessages) {
+    const wordPool = piknowMessages.reduce((acc, text) => {
+      if (text) {
+        acc.push(...this.splitIntoWords(text));
+      }
+      return acc;
+    }, []);
+
+    const phrasePool = piknowMessages.reduce((acc, text) => {
+      if (text) {
+        acc.push(...this.splitIntoPhrases(text));
+      }
+      return acc;
+    }, []);
+
+    const mixingStyle = Math.floor(Math.random() * 5);
+
+    switch (mixingStyle) {
+      case 0:
+        return this.getRandomElement(piknowMessages);
+
+      case 1:
+        const numWords = Math.floor(Math.random() * 2) + 2;
+        const words = [];
+        for (let i = 0; i < numWords; i++) {
+          words.push(this.getRandomElement(wordPool));
+        }
+        return words.join(' ');
+
+      case 2:
+        const phrase = this.getRandomElement(phrasePool);
+        const word = this.getRandomElement(wordPool);
+        return `${phrase} ${word}`;
+
+      case 3:
+        const phrases = [
+          this.getRandomElement(phrasePool),
+          this.getRandomElement(phrasePool)
+        ];
+        return phrases.join(', ');
+
+      case 4:
+        const firstWord = this.getRandomElement(wordPool);
+        const middlePhrase = this.getRandomElement(phrasePool);
+        const lastWord = this.getRandomElement(wordPool);
+        return `${firstWord} ${middlePhrase} ${lastWord}`;
     }
   }
   

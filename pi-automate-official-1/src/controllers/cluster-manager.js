@@ -14,7 +14,8 @@ class ClusterManager extends EventEmitter {
       total: 0,
       success: 0,
       failure: 0,
-      completed: 0
+      completed: 0,
+      piknowedPostIds: [] // Thêm danh sách ID bài đã PiKnow
     };
     this.progressInterval = null;
     this.isShuttingDown = false;
@@ -134,7 +135,7 @@ class ClusterManager extends EventEmitter {
       .map((char, i) => i < Math.floor(percent / 5) ? '█' : '▒')
       .join('');
 
-    console.log(`\n-------- TRẠNG THÁI TIẾN ĐỘ ĐĂNG BÀI --------`);
+    console.log(`\n-------- TRẠNG THÁI TIẾN ĐỘ --------`);
     console.log(`[${bar}] ${percent}% (${this.results.completed}/${this.results.total})`);
     console.log(`✅ Thành công: ${this.results.success} | ❌ Thất bại: ${this.results.failure}`);
     console.log(`🧵 Worker đang chạy: ${this.workers.length}`);
@@ -151,48 +152,12 @@ class ClusterManager extends EventEmitter {
     this.emit('progress', this.results);
   }
 
-  // Phân phối tài khoản cho các worker
+  // Phân phối tài khoản cho các worker để ĐĂNG BÀI
   async distributeAccounts(totalPostCount) {
     if (!cluster.isPrimary) return;
 
     try {
-      const excelFilePath = path.join(__dirname, "../data/PI.xlsx");
-      const excelReader = new ExcelReaderService(excelFilePath);
-      const excelData = excelReader.readAllSheets();
-      
-      const uid = excelData["prxageng"]["uid"] || [];
-      const piname = excelData["prxageng"]["piname"] || [];
-      const proxy = excelData["prxageng"]["proxy"] || [];
-      const ukey = excelData["prxageng"]["ukey"] || [];
-      const userAgent = excelData["prxageng"]["user_agent"] || [];
-      
-      const userObjects = uid.filter(user => user !== null).map((user, index) => {
-        if (index >= proxy.length) {
-          console.error(`Không đủ thông tin proxy cho user ${index + 1}`);
-          return null;
-        }
-        
-        try {
-          const newProxy = proxy[index].split(":");
-          return {
-            uid: user,
-            piname: piname[index] || `user_${user}`,
-            ukey: ukey[index] || '',
-            userAgent: userAgent[index] || 'Mozilla/5.0',
-            proxy: {
-              host: newProxy[0],
-              port: newProxy[1],
-              name: newProxy[2],
-              password: newProxy[3],
-            },
-          };
-        } catch (error) {
-          console.error(`Lỗi xử lý user ${index + 1}: ${error.message}`);
-          return null;
-        }
-      }).filter(user => user !== null);
-
-      console.log(`Đọc được ${userObjects.length} tài khoản từ file Excel`);
+      const userObjects = await this._readUserAccounts();
       
       if (userObjects.length === 0) {
         throw new Error("Không có tài khoản nào đọc được từ file Excel!");
@@ -258,9 +223,122 @@ class ClusterManager extends EventEmitter {
     }
   }
 
+  // Phân phối tài khoản cho các worker để PIKNOW
+  async distributePiKnowAccounts(totalPiKnowCount) {
+    if (!cluster.isPrimary) return;
+
+    try {
+      const userObjects = await this._readUserAccounts();
+      
+      if (userObjects.length === 0) {
+        throw new Error("Không có tài khoản nào đọc được từ file Excel!");
+      }
+      
+      // Chỉ giữ lại các worker đang hoạt động
+      const activeWorkers = this.workers.filter(worker => worker.isConnected());
+      
+      if (activeWorkers.length === 0) {
+        throw new Error("Không có worker nào đang hoạt động!");
+      }
+      
+      // Phân chia danh sách tài khoản cho các worker
+      const accountsPerWorker = Math.max(1, Math.ceil(userObjects.length / activeWorkers.length));
+      console.log(`Mỗi worker sẽ xử lý khoảng ${accountsPerWorker} tài khoản cho PiKnow`);
+      
+      for (let i = 0; i < activeWorkers.length; i++) {
+        const worker = activeWorkers[i];
+        const startIndex = i * accountsPerWorker;
+        const endIndex = Math.min(startIndex + accountsPerWorker, userObjects.length);
+        
+        if (startIndex >= userObjects.length) {
+          // Worker này không có tài khoản nào để xử lý
+          console.log(`Worker ${worker.process.pid} không được phân công tài khoản nào cho PiKnow`);
+          worker.send({
+            type: 'piknow-accounts',
+            data: {
+              accounts: [],
+              piknowCount: totalPiKnowCount
+            }
+          });
+          continue;
+        }
+        
+        const workerAccounts = userObjects.slice(startIndex, endIndex);
+        
+        // Cập nhật thông tin worker
+        const workerData = this.workersData.get(worker.id);
+        if (workerData) {
+          workerData.status = 'busy';
+          workerData.accounts = workerAccounts.length;
+          workerData.totalTasks = workerAccounts.length * totalPiKnowCount;
+        }
+        
+        // Gửi danh sách tài khoản cho worker
+        worker.send({
+          type: 'piknow-accounts',
+          data: {
+            accounts: workerAccounts,
+            piknowCount: totalPiKnowCount
+          }
+        });
+        
+        console.log(`Đã gửi ${workerAccounts.length} tài khoản cho worker ${worker.process.pid} để PiKnow`);
+      }
+      
+      // Cập nhật tổng số tác vụ
+      this.results.total = userObjects.length * totalPiKnowCount;
+      console.log(`Tổng số PiKnow dự kiến: ${this.results.total}`);
+    } catch (error) {
+      console.error('Lỗi khi phân phối tài khoản cho PiKnow:', error);
+      this.emit('error', error);
+    }
+  }
+
+  // Hàm đọc tài khoản từ Excel để tái sử dụng
+  async _readUserAccounts() {
+    const excelFilePath = path.join(__dirname, "../data/PI.xlsx");
+    const excelReader = new ExcelReaderService(excelFilePath);
+    const excelData = excelReader.readAllSheets();
+    
+    const uid = excelData["prxageng"]["uid"] || [];
+    const piname = excelData["prxageng"]["piname"] || [];
+    const proxy = excelData["prxageng"]["proxy"] || [];
+    const ukey = excelData["prxageng"]["ukey"] || [];
+    const userAgent = excelData["prxageng"]["user_agent"] || [];
+    
+    const userObjects = uid.filter(user => user !== null).map((user, index) => {
+      if (index >= proxy.length) {
+        console.error(`Không đủ thông tin proxy cho user ${index + 1}`);
+        return null;
+      }
+      
+      try {
+        const newProxy = proxy[index].split(":");
+        return {
+          uid: user,
+          piname: piname[index] || `user_${user}`,
+          ukey: ukey[index] || '',
+          userAgent: userAgent[index] || 'Mozilla/5.0',
+          proxy: {
+            host: newProxy[0],
+            port: newProxy[1],
+            name: newProxy[2],
+            password: newProxy[3],
+          },
+        };
+      } catch (error) {
+        console.error(`Lỗi xử lý user ${index + 1}: ${error.message}`);
+        return null;
+      }
+    }).filter(user => user !== null);
+
+    console.log(`Đọc được ${userObjects.length} tài khoản từ file Excel`);
+    return userObjects;
+  }
+
   // Cập nhật tiến trình từ các worker
   updateProgress(workerId, progressData) {
-    const { success, failure, completed } = progressData;
+    const { success, failure, completed, piknowedPostIds } = progressData;
     
     // Cập nhật thông tin chi tiết của worker
     const workerData = this.workersData.get(workerId);
@@ -275,6 +353,14 @@ class ClusterManager extends EventEmitter {
     this.results.success += success || 0;
     this.results.failure += failure || 0;
     this.results.completed += completed || 0;
+    
+    // Thêm ID bài đã PiKnow vào danh sách tổng hợp
+    if (piknowedPostIds && Array.isArray(piknowedPostIds)) {
+      this.results.piknowedPostIds = [
+        ...this.results.piknowedPostIds,
+        ...piknowedPostIds
+      ];
+    }
   }
 
   // Xử lý khi worker hoàn thành công việc
@@ -291,7 +377,7 @@ class ClusterManager extends EventEmitter {
     
     if (allCompleted || this.results.completed >= this.results.total) {
       this.displayProgress();
-      console.log(`\n>> Kết quả cuối cùng: ${this.results.success} bài viết đăng thành công, ${this.results.failure} bài viết thất bại`);
+      console.log(`\n>> Kết quả cuối cùng: ${this.results.success} tác vụ thành công, ${this.results.failure} tác vụ thất bại`);
       
       if (this.progressInterval) {
         clearInterval(this.progressInterval);

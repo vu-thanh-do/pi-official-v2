@@ -8,6 +8,8 @@ const {
 const getAllPostPiKnow = require("../services/getAllPostPiKnow");
 const ExcelReaderService = require("../models/excelSheed");
 const { cpus } = require('os');
+const cluster = require('cluster');
+const ClusterManager = require('./cluster-manager');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -229,6 +231,78 @@ function generateMixedPiKnowMessage(piknowMessages) {
 }
 
 async function handlePiKnow(req) {
+  try {
+    const piknowCount = req;
+    console.log(`>> Yêu cầu piknow ${piknowCount} bài viết`);
+
+    if (piknowCount <= 0) return { success: true, message: "Không cần piknow" };
+    
+    if (cluster.isPrimary) {
+      const availableCores = cpus().length;
+      console.log(`>> Máy tính có ${availableCores} CPU cores`);
+      
+      const workerCount = Math.max(1, availableCores - 1);
+      console.log(`>> Khởi tạo ${workerCount} worker processes...`);
+      
+      const clusterManager = new ClusterManager({ numWorkers: workerCount });
+      
+      clusterManager.on('complete', (results) => {
+        console.log(`\n>> Kết quả cuối cùng: ${results.success} PiKnow thành công, ${results.failure} PiKnow thất bại`);
+        
+        if (results.piknowedPostIds && results.piknowedPostIds.length > 0) {
+          console.log(`>> Đã PiKnow ${results.piknowedPostIds.length} bài viết khác nhau`);
+        }
+      });
+      
+      const isMaster = await clusterManager.initialize();
+      
+      if (isMaster) {
+        await clusterManager.distributePiKnowAccounts(piknowCount);
+        
+        return new Promise((resolve) => {
+          clusterManager.on('complete', (results) => {
+            resolve({
+              success: true,
+              message: `Đã PiKnow ${results.success}/${results.total} bài thành công!`,
+              stats: {
+                total: results.total,
+                success: results.success,
+                failure: results.failure,
+                piknowedPostIds: results.piknowedPostIds || []
+              }
+            });
+          });
+          
+          setTimeout(() => {
+            resolve({
+              success: true,
+              message: `Đã quá thời gian chờ. Đã PiKnow ${clusterManager.results.success}/${clusterManager.results.total} bài.`,
+              stats: { 
+                ...clusterManager.results,
+                piknowedPostIds: clusterManager.results.piknowedPostIds || []
+              }
+            });
+          }, 1000 * 60 * 30);
+        });
+      }
+    }
+    
+    return { 
+      success: true,
+      message: "Đã khởi động các worker processes để PiKnow"
+    };
+
+  } catch (error) {
+    console.error(`❌ Lỗi không xử lý được: ${error.message}`);
+    return {
+      success: false,
+      message: `Đã xảy ra lỗi khi PiKnow: ${error.message}`,
+      error: error.toString()
+    };
+  }
+}
+
+async function handlePiKnowWithTaskQueue(req) {
   const taskQueue = new TaskQueue();
   try {
     const countPiKnow = req;
@@ -277,9 +351,8 @@ async function handlePiKnow(req) {
 
     console.log(`>> Bắt đầu lấy danh sách bài PiKnow cho từng user...`);
     
-    const userPostsMap = new Map(); // Lưu trữ danh sách bài của từng user
+    const userPostsMap = new Map();
     
-    // Lấy danh sách bài cho từng user
     for (const user of userObjects) {
       const userPosts = await getAllPostPiKnow(user);
       if (userPosts.length > 0) {
@@ -301,7 +374,7 @@ async function handlePiKnow(req) {
     console.log(`>> Bắt đầu piknow...`);
 
     const allTasks = [];
-    const usedIds = new Map(); // Đổi thành Map để theo dõi riêng cho từng user
+    const usedIds = new Map();
 
     for (const [userIndex, user] of userObjects.entries()) {
       console.log(`\n>> Chuẩn bị xử lý user ${userIndex + 1}/${userObjects.length}: ${user.piname}`);
@@ -426,13 +499,11 @@ async function handlePiKnow(req) {
       };
     }
 
-    // Xáo trộn tasks để phân bố đều
     for (let i = allTasks.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [allTasks[i], allTasks[j]] = [allTasks[j], allTasks[i]];
     }
 
-    // Thêm tasks vào queue
     for (const { userId, task } of allTasks) {
       await taskQueue.add(task, userId);
     }
@@ -484,3 +555,4 @@ async function handlePiKnow(req) {
 
 module.exports = handlePiKnow;
 module.exports.handlePiKnow = handlePiKnow;
+module.exports.handlePiKnowWithTaskQueue = handlePiKnowWithTaskQueue;
