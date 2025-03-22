@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Chọn Chế Độ - PI Automate</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f0f2f5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            width: 80%;
+            max-width: 800px;
+            margin-top: 50px;
+        }
+        h1 {
+            color: #1a73e8;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .mode-buttons {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            justify-content: center;
+        }
+        .mode-button {
+            padding: 20px;
+            font-size: 16px;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+        .mode-button i {
+            font-size: 24px;
+            margin-bottom: 10px;
+        }
+        .mode-button.manual {
+            background-color: #1a73e8;
+            color: white;
+        }
+        .mode-button.sequential {
+            background-color: #34a853;
+            color: white;
+        }
+        .mode-button.rotation {
+            background-color: #ea4335;
+            color: white;
+        }
+        .mode-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+        .mode-description {
+            font-size: 14px;
+            opacity: 0.9;
+            margin-top: 5px;
+            text-align: center;
+        }
+    </style>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
+</head>
+<body>
+    <div class="container">
+        <h1>PI Automate - Chọn Chế Độ</h1>
+        <div class="mode-buttons">
+            <button class="mode-button manual" onclick="selectMode('manual')">
+                <i class="fas fa-hand-paper"></i>
+                Thủ Công
+                <div class="mode-description">Tự do cấu hình và chạy các tác vụ</div>
+            </button>
+            <button class="mode-button rotation" onclick="selectMode('rotation')">
+                <i class="fas fa-sync-alt"></i>
+                Luân Phiên
+                <div class="mode-description">Xử lý theo lô và luân phiên các tác vụ</div>
+            </button>
+        </div>
+    </div>
+
+    <script>
+        function selectMode(mode) {
+            switch(mode) {
+                case 'manual':
+                    window.location.href = 'index.html';
+                    break;
+                case 'sequential':
+                    window.location.href = 'sequential.html';
+                    break;
+                case 'rotation':
+                    window.location.href = 'rotation.html';
+                    break;
+            }
+        }
+    </script>
+</body>
+</html> 

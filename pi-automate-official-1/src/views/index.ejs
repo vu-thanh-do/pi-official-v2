@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard Tool</title>
+    <style>
+        :root {
+            --primary-color: #4361ee;
+            --secondary-color: #3f37c9;
+            --accent-color: #4895ef;
+            --text-color: #333;
+            --light-color: #f8f9fa;
+            --border-color: #dee2e6;
+            --success-color: #4cc9f0;
+            --error-color: #f72585;
+            --box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        body {
+            background-color: #f5f7fb;
+            color: var(--text-color);
+            padding: 20px;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            padding: 30px;
+            box-shadow: var(--box-shadow);
+        }
+
+        h1 {
+            text-align: center;
+            color: var(--primary-color);
+            margin-bottom: 30px;
+            font-weight: 600;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+            transition: all 0.3s ease;
+        }
+
+        .form-group:hover {
+            transform: translateY(-2px);
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: var(--secondary-color);
+        }
+
+        input[type="number"] {
+            width: 100%;
+            padding: 12px 15px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            font-size: 16px;
+            transition: all 0.3s ease;
+        }
+
+        input[type="number"]:focus {
+            outline: none;
+            border-color: var(--accent-color);
+            box-shadow: 0 0 0 3px rgba(67, 97, 238, 0.2);
+        }
+
+        .submit-btn {
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            padding: 14px 20px;
+            width: 100%;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            margin-top: 20px;
+            transition: all 0.3s ease;
+        }
+
+        .submit-btn:hover {
+            background-color: var(--secondary-color);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.1);
+        }
+
+        .message {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 14px;
+            text-align: center;
+        }
+
+        .success {
+            background-color: var(--success-color);
+            color: white;
+        }
+
+        .error {
+            background-color: var(--error-color);
+            color: white;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>Social Management Tool</h1>
+        <form id="socialForm">
+            <div class="form-group">
+                <label for="login">Đăng nhập vào tài khoản (0 là không đăng nhập)</label>
+                <input type="number" id="login" value="0" min="0">
+            </div>
+            <div class="form-group">
+                <label for="commentCount">Số Lần Comment Home (0 là không comment)</label>
+                <input type="number" id="commentCount" value="0" min="0">
+            </div>
+
+            <div class="form-group">
+                <label for="likeCount">Số Lần Like Home (0 là không like)</label>
+                <input type="number" id="likeCount" value="0" min="0">
+            </div>
+            <div class="form-group">
+                <label for="postCount">Số bài muốn đăng (0 là không đăng)</label>
+                <input type="number" id="postCount" value="0" min="0">
+            </div>
+            <div class="form-group">
+                <label for="piKnow">Số bài muốn  comments PiKnow (0 là không  comment)</label>
+                <input type="number" id="piKnow" value="0" min="0">
+            </div>
+            <div class="form-group">
+                <label for="likeEachOther">Số lần muốn like chéo nhau (0 là không like)</label>
+                <input type="number" id="likeEachOther" value="0" min="0">
+            </div>
+            <div class="form-group">
+                <label for="deleteCount">Số Bài muốn xoá (0 là không xoá)</label>
+                <input type="number" id="deleteCount" value="0" min="0">
+            </div>
+            <button type="submit" class="submit-btn">Thực hiện</button>
+        </form>
+
+        <div id="responseMessage" class="message"></div>
+    </div>
+
+    <script>
+        document.getElementById('socialForm').addEventListener('submit', function (event) {
+            event.preventDefault();
+
+            const data = {
+                commentCount: parseInt(document.getElementById('commentCount').value),
+                likeCount: parseInt(document.getElementById('likeCount').value),
+                deleteCount: parseInt(document.getElementById('deleteCount').value),
+                postCount: parseInt(document.getElementById('postCount').value),
+                piKnow: parseInt(document.getElementById('piKnow').value),
+                likeEachOther: parseInt(document.getElementById('likeEachOther').value),
+                login: parseInt(document.getElementById('login').value)
+            };
+
+            fetch('/execute-tasks', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            })
+                .then(res => res.json())
+                .then(response => {
+                    const messageBox = document.getElementById('responseMessage');
+                    messageBox.textContent = response.message;
+                    messageBox.className = response.success ? 'message success' : 'message error';
+                })
+                .catch(err => console.error("Lỗi gửi request:", err));
+        });
+    </script>
+</body>
+
+</html>

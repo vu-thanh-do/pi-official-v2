@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Chế Độ Luân Phiên - PI Automate</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f0f2f5;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        h1 {
+            color: #1a73e8;
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 32px;
+            font-weight: 500;
+        }
+        .config-section, .tasks-section {
+            background: white;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 2px 15px rgba(0,0,0,0.08);
+            margin-bottom: 20px;
+            transition: all 0.3s ease;
+        }
+        .config-section:hover, .tasks-section:hover {
+            box-shadow: 0 4px 20px rgba(0,0,0,0.12);
+        }
+        h2 {
+            color: #202124;
+            margin-top: 0;
+            margin-bottom: 20px;
+            font-size: 24px;
+            font-weight: 500;
+            border-bottom: 2px solid #f1f3f4;
+            padding-bottom: 10px;
+        }
+        .config-item {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #5f6368;
+            font-weight: 500;
+            font-size: 14px;
+        }
+        input[type="number"] {
+            width: 100%;
+            padding: 10px 12px;
+            border: 2px solid #dadce0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+        input[type="number"]:focus {
+            border-color: #1a73e8;
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(26,115,232,0.2);
+        }
+        .task-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .task-item {
+            display: flex;
+            align-items: center;
+            padding: 12px 15px;
+            background: #f8f9fa;
+            border: 2px solid #dadce0;
+            border-radius: 8px;
+            margin-bottom: 0;
+            cursor: move;
+            transition: all 0.2s ease;
+        }
+        .task-item:hover {
+            background: #f1f3f4;
+            border-color: #1a73e8;
+            transform: translateY(-1px);
+        }
+        .task-handle {
+            margin-right: 15px;
+            color: #5f6368;
+            cursor: move;
+            padding: 5px;
+        }
+        .task-name {
+            flex-grow: 1;
+            font-weight: 500;
+            color: #202124;
+            font-size: 14px;
+        }
+        .task-count {
+            width: 100px;
+            padding: 8px 12px;
+            border: 2px solid #dadce0;
+            border-radius: 6px;
+            text-align: center;
+            margin: 0 15px;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+        .task-count:focus {
+            border-color: #1a73e8;
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(26,115,232,0.2);
+        }
+        .task-remove {
+            color: #ea4335;
+            cursor: pointer;
+            padding: 8px;
+            border-radius: 50%;
+            transition: all 0.2s ease;
+        }
+        .task-remove:hover {
+            background: rgba(234,67,53,0.1);
+        }
+        .task-controls {
+            margin-top: 20px;
+            display: flex;
+            gap: 15px;
+            justify-content: flex-start;
+            align-items: center;
+        }
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.3s ease;
+        }
+        button i {
+            font-size: 16px;
+        }
+        button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        }
+        .btn-primary {
+            background-color: #1a73e8;
+            color: white;
+        }
+        .btn-primary:hover {
+            background-color: #1557b0;
+        }
+        .btn-secondary {
+            background-color: #5f6368;
+            color: white;
+        }
+        .btn-secondary:hover {
+            background-color: #494c50;
+        }
+        .btn-danger {
+            background-color: #ea4335;
+            color: white;
+        }
+        .btn-danger:hover {
+            background-color: #d33828;
+        }
+        .progress-section {
+            margin-top: 10px;
+        }
+        .progress-bar {
+            height: 24px;
+            background-color: #e8f0fe;
+            border-radius: 12px;
+            overflow: hidden;
+            margin-top: 15px;
+            border: 2px solid #dadce0;
+        }
+        .progress-fill {
+            height: 100%;
+            background-color: #1a73e8;
+            width: 0%;
+            transition: width 0.3s ease;
+            border-radius: 10px;
+        }
+        .status-text {
+            margin-top: 12px;
+            text-align: center;
+            color: #5f6368;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        .back-button {
+            position: fixed;
+            bottom: 25px;
+            right: 25px;
+            background-color: #202124;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 25px;
+            text-decoration: none;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+        }
+        .back-button:hover {
+            background-color: #3c4043;
+            transform: translateY(-2px);
+            box-shadow: 0 6px 15px rgba(0,0,0,0.25);
+        }
+    </style>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Chế Độ Luân Phiên</h1>
+        
+        <div class="config-section">
+            <h2>Cấu Hình</h2>
+            <div class="config-item">
+                <label for="userDelay">Thời gian chờ giữa các tác vụ (giây):</label>
+                <input type="number" id="userDelay" min="1" value="2">
+            </div>
+            <div class="config-item">
+                <label for="retryCount">Số lần thử lại khi gặp lỗi:</label>
+                <input type="number" id="retryCount" min="0" value="2">
+            </div>
+        </div>
+
+        <div class="tasks-section">
+            <h2>Danh Sách Tác Vụ</h2>
+            <ul id="taskList" class="task-list">
+                <li class="task-item" draggable="true">
+                    <span class="task-handle"><i class="fas fa-grip-vertical"></i></span>
+                    <span class="task-name">Đăng nhập</span>
+                    <input type="number" class="task-count" value="1" min="1" title="Số lần thực hiện">
+                    <span class="task-remove"><i class="fas fa-times"></i></span>
+                </li>
+                <li class="task-item" draggable="true">
+                    <span class="task-handle"><i class="fas fa-grip-vertical"></i></span>
+                    <span class="task-name">Like bài viết</span>
+                    <input type="number" class="task-count" value="5" min="1" title="Số lần thực hiện">
+                    <span class="task-remove"><i class="fas fa-times"></i></span>
+                </li>
+                <li class="task-item" draggable="true">
+                    <span class="task-handle"><i class="fas fa-grip-vertical"></i></span>
+                    <span class="task-name">Pi Know</span>
+                    <input type="number" class="task-count" value="3" min="1" title="Số lần thực hiện">
+                    <span class="task-remove"><i class="fas fa-times"></i></span>
+                </li>
+            </ul>
+            <div class="task-controls">
+                <button id="addTask" class="btn-secondary">
+                    <i class="fas fa-plus"></i> Thêm Tác Vụ
+                </button>
+                <button id="startRotation" class="btn-primary">
+                    <i class="fas fa-play"></i> Bắt Đầu
+                </button>
+                <button id="stopRotation" class="btn-danger" style="display: none;">
+                    <i class="fas fa-stop"></i> Dừng Lại
+                </button>
+            </div>
+        </div>
+
+        <div class="progress-section">
+            <h2>Tiến Độ</h2>
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressBar"></div>
+            </div>
+            <div class="status-text" id="statusText">
+                Đang chờ bắt đầu...
+            </div>
+        </div>
+    </div>
+
+    <a href="mode-select.html" class="back-button">
+        <i class="fas fa-arrow-left"></i> Quay Lại
+    </a>
+
+    <script>
+        // Khai báo các biến và hằng số
+        const TASK_TYPES = {
+            'Đăng nhập': 'login',
+            'Like bài viết': 'like',
+            'Pi Know': 'piKnow',
+            'Like lẫn nhau': 'likeEachOther',
+            'Comment': 'comment',
+            'Đăng bài': 'post',
+            'Xóa bài': 'delete'
+        };
+
+        // Drag and drop functionality
+        const taskList = document.getElementById('taskList');
+        let draggedItem = null;
+
+        function handleDragStart(e) {
+            draggedItem = this;
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/html', this.innerHTML);
+            this.classList.add('dragging');
+        }
+
+        function handleDragOver(e) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            const taskItem = e.target.closest('.task-item');
+            if (taskItem && taskItem !== draggedItem) {
+                const rect = taskItem.getBoundingClientRect();
+                const mid = (rect.bottom - rect.top) / 2;
+                if (e.clientY - rect.top < mid) {
+                    taskItem.parentNode.insertBefore(draggedItem, taskItem);
+                } else {
+                    taskItem.parentNode.insertBefore(draggedItem, taskItem.nextSibling);
+                }
+            }
+        }
+
+        function handleDragEnd(e) {
+            this.classList.remove('dragging');
+            draggedItem = null;
+        }
+
+        // Initialize drag and drop
+        function initDragAndDrop() {
+            const taskItems = document.querySelectorAll('.task-item');
+            taskItems.forEach(item => {
+                item.addEventListener('dragstart', handleDragStart);
+                item.addEventListener('dragend', handleDragEnd);
+            });
+            taskList.addEventListener('dragover', handleDragOver);
+        }
+
+        // Lấy danh sách tác vụ hiện tại
+        function getCurrentTasks() {
+            const tasks = [];
+            document.querySelectorAll('.task-item').forEach(item => {
+                const taskName = item.querySelector('.task-name').textContent;
+                const count = parseInt(item.querySelector('.task-count').value) || 1;
+                tasks.push({
+                    name: taskName,
+                    count: count
+                });
+            });
+            return tasks;
+        }
+
+        // Add new task
+        document.getElementById('addTask').addEventListener('click', () => {
+            const currentTasks = getCurrentTasks();
+            const availableTasks = Object.keys(TASK_TYPES).filter(task => !currentTasks.some(t => t.name === task));
+
+            if (availableTasks.length === 0) {
+                alert('Đã thêm tất cả các tác vụ!');
+                return;
+            }
+
+            const select = document.createElement('select');
+            select.style.padding = '5px';
+            select.style.marginRight = '10px';
+            availableTasks.forEach(name => {
+                const option = document.createElement('option');
+                option.value = name;
+                option.textContent = name;
+                select.appendChild(option);
+            });
+
+            const addButton = document.createElement('button');
+            addButton.textContent = 'Thêm';
+            addButton.className = 'btn-primary';
+            addButton.style.marginRight = '5px';
+
+            const cancelButton = document.createElement('button');
+            cancelButton.textContent = 'Hủy';
+            cancelButton.className = 'btn-secondary';
+
+            const container = document.createElement('div');
+            container.style.marginBottom = '10px';
+            container.appendChild(select);
+            container.appendChild(addButton);
+            container.appendChild(cancelButton);
+
+            taskList.appendChild(container);
+
+            addButton.onclick = () => {
+                const newTask = document.createElement('li');
+                newTask.className = 'task-item';
+                newTask.draggable = true;
+                newTask.innerHTML = `
+                    <span class="task-handle"><i class="fas fa-grip-vertical"></i></span>
+                    <span class="task-name">${select.value}</span>
+                    <input type="number" class="task-count" value="1" min="1" title="Số lần thực hiện">
+                    <span class="task-remove"><i class="fas fa-times"></i></span>
+                `;
+                taskList.replaceChild(newTask, container);
+                initDragAndDrop();
+                initRemoveButtons();
+            };
+
+            cancelButton.onclick = () => {
+                taskList.removeChild(container);
+            };
+        });
+
+        // Remove task
+        function initRemoveButtons() {
+            document.querySelectorAll('.task-remove').forEach(button => {
+                button.onclick = function() {
+                    this.closest('.task-item').remove();
+                };
+            });
+        }
+
+        // Start/Stop rotation
+        let isRunning = false;
+        const startButton = document.getElementById('startRotation');
+        const stopButton = document.getElementById('stopRotation');
+        const progressBar = document.getElementById('progressBar');
+        const statusText = document.getElementById('statusText');
+
+        async function startRotation() {
+            const tasks = getCurrentTasks().map(task => ({
+                type: TASK_TYPES[task.name],
+                name: task.name,
+                count: task.count
+            }));
+
+            if (tasks.length === 0) {
+                alert('Vui lòng thêm ít nhất một tác vụ!');
+                stopRotation();
+                return;
+            }
+
+            const config = {
+                userDelay: parseInt(document.getElementById('userDelay').value) || 2,
+                retryCount: parseInt(document.getElementById('retryCount').value) || 2,
+                tasks: tasks
+            };
+
+            try {
+                const port = window.SERVER_PORT || localStorage.getItem('SERVER_PORT');
+                if (!port) {
+                    throw new Error('Không thể kết nối với server. Vui lòng khởi động lại ứng dụng.');
+                }
+
+                // Gửi cấu hình đến server
+                const response = await fetch(`http://localhost:${port}/start-rotation`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(config)
+                });
+
+                if (!response.ok) {
+                    throw new Error('Lỗi khi gửi cấu hình đến server');
+                }
+
+                // Lắng nghe cập nhật tiến độ từ server
+                const eventSource = new EventSource(`http://localhost:${port}/rotation-progress`);
+                
+                eventSource.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    updateProgress(data);
+                };
+
+                eventSource.onerror = () => {
+                    eventSource.close();
+                    stopRotation();
+                };
+
+            } catch (error) {
+                console.error('Lỗi:', error);
+                alert(`Lỗi: ${error.message}`);
+                stopRotation();
+            }
+        }
+
+        function updateProgress(data) {
+            const { progress, currentTask, status, error } = data;
+
+            if (error) {
+                statusText.textContent = `Lỗi: ${error}`;
+                stopRotation();
+                return;
+            }
+
+            progressBar.style.width = `${progress}%`;
+            statusText.textContent = `${status} - ${progress}%`;
+
+            if (progress >= 100) {
+                stopRotation();
+                statusText.textContent = 'Hoàn thành!';
+            }
+        }
+
+        function stopRotation() {
+            if (!isRunning) return;
+
+            isRunning = false;
+            stopButton.style.display = 'none';
+            startButton.style.display = 'inline-block';
+
+            try {
+                const port = window.SERVER_PORT || localStorage.getItem('SERVER_PORT');
+                if (port) {
+                    fetch(`http://localhost:${port}/stop-rotation`, {
+                        method: 'POST'
+                    });
+                }
+            } catch (error) {
+                console.error('Lỗi khi dừng tiến trình:', error);
+            }
+        }
+
+        startButton.addEventListener('click', () => {
+            if (!isRunning) {
+                isRunning = true;
+                startButton.style.display = 'none';
+                stopButton.style.display = 'inline-block';
+                startRotation();
+            }
+        });
+
+        stopButton.addEventListener('click', () => {
+            stopRotation();
+        });
+
+        // Initialize
+        initDragAndDrop();
+        initRemoveButtons();
+
+        // Cleanup khi rời trang
+        window.addEventListener('beforeunload', () => {
+            if (isRunning) {
+                stopRotation();
+            }
+        });
+    </script>
+</body>
+</html> 
