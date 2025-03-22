@@ -4,6 +4,8 @@ const path = require("path");
 const qs = require("qs");
 const getImageUrl = require("../services/serviceGetImage");
 const { cpus } = require('os');
+const cluster = require('cluster');
+const ClusterManager = require('./cluster-manager');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -247,235 +249,77 @@ function generateUniqueContent(contents) {
   return generateMixedContent(contents, 3, 5);
 }
 
+// Cập nhật hàm handlePostArticles để sử dụng cluster
 async function handlePostArticles(req) {
-  
-    const taskQueue = new TaskQueue();
   try {
     const postCount = req;
     console.log(`>> Yêu cầu đăng ${postCount} bài viết`);
 
     if (postCount <= 0) return { success: true, message: "Không cần đăng bài" };
     
-    const excelFilePath = path.join(__dirname, "../data/PI.xlsx");
-    const excelReader = new ExcelReaderService(excelFilePath);
-    const excelData = excelReader.readAllSheets();
-    
-    const uid = excelData["prxageng"]["uid"] || [];
-    const piname = excelData["prxageng"]["piname"] || [];
-    const proxy = excelData["prxageng"]["proxy"] || [];
-    const ukey = excelData["prxageng"]["ukey"] || [];
-    const userAgent = excelData["prxageng"]["user_agent"] || [];
-    const titles = excelData["title"]["titles"] || [];
-    const contents = excelData["title"]["contents"] || [];
-    
-    const userObjects = uid.filter(user => user !== null).map((user, index) => {
-      const newProxy = proxy[index].split(":");
-      return {
-        uid: user,
-        piname: piname[index],
-        ukey: ukey[index],
-        userAgent: userAgent[index],
-        proxy: {
-          host: newProxy[0],
-          port: newProxy[1],
-          name: newProxy[2],
-          password: newProxy[3],
-        },
-      };
-    });
-
-    if (userObjects.length === 0) {
-      return {
-        success: false,
-        message: "Không tìm thấy dữ liệu user từ file Excel",
-      };
-    }
-
-    if (titles.length === 0 || contents.length === 0) {
-      return {
-        success: false,
-        message: "Không tìm thấy nội dung bài viết (tiêu đề hoặc nội dung) từ file Excel",
-      };
-    }
-
-    const totalCores = cpus().length;
-    console.log(`>> Máy tính có ${totalCores} CPU cores`);
-    
-    
-    console.log(`>> Tìm thấy ${userObjects.length} users, ${titles.length} tiêu đề, ${contents.length} nội dung`);
-    console.log(`>> Bắt đầu đăng bài...`);
-    
-    
-    const allTasks = [];
-    console.log('\n>> Danh sách users sẽ được xử lý:');
-    userObjects.forEach((user, idx) => {
-      console.log(`>> [${idx + 1}/${userObjects.length}] User: ${user.piname} (${user.uid})`);
-    });
-    console.log('\n');
-
-    // Xử lý lần lượt từng user
-    for (const [userIndex, user] of userObjects.entries()) {
-      console.log(`\n==========================================`);
-      console.log(`>> ĐANG XỬ LÝ USER THỨ ${userIndex + 1}/${userObjects.length}`);
-      console.log(`>> User: ${user.piname} (${user.uid})`);
-      console.log(`==========================================\n`);
+    // Kiểm tra xem hiện tại đang ở Master hay Worker
+    if (cluster.isPrimary) {
+      // Khởi tạo quản lý cluster
+      const availableCores = cpus().length;
+      console.log(`>> Máy tính có ${availableCores} CPU cores`);
       
-      const api = apiClient(user);
+      // Tính toán số lượng worker tối ưu - nên để lại ít nhất 1 core cho hệ thống
+      const workerCount = Math.max(1, availableCores - 1);
+      console.log(`>> Khởi tạo ${workerCount} worker processes...`);
       
-      // Tạo các tasks cho user hiện tại
-      const userTasks = [];
-      for (let i = 0; i < postCount; i++) {
-        userTasks.push({
-          userId: user.uid,
-          task: async () => {
-            console.log(`\n>> [USER ${userIndex + 1}/${userObjects.length}] ${user.piname} - Đăng bài ${i + 1}/${postCount}`);
-            
-            const finalTitle = generateUniqueTitle(titles);
-            const uniqueContent = generateUniqueContent(contents);
-
-            console.log(`>> Tiêu đề được tạo: ${finalTitle}`);
-            console.log(`>> Nội dung được tạo: ${uniqueContent}`);
-
-            let imageUrl;
-            try {
-              imageUrl = await getImageUrl();
-              console.log(`>> Đã lấy được ảnh: ${imageUrl}`);
-            } catch (error) {
-              console.error(`❌ Lỗi khi lấy ảnh: ${error.message}`);
-              imageUrl = "https://asset.vcity.app/vfile/2024/11/25/01/1732528133865582447460541631585-thumb.jpg";
-            }
-            
-            const galleryId = imageUrl.split('/').pop().split('.')[0];
-            console.log(`>> Sử dụng gallery ID: ${galleryId}`);
-            
-            const maxRetries = 2;
-            let retryCount = 0;
-            
-            const urlVariants = ['/vapi', '/vapi/', 'vapi'];
-            let currentUrlVariantIndex = 0;
-            
-            while (retryCount <= maxRetries) {
-              try {
-                if (retryCount > 0) {
-                  console.log(`>> Thử lại lần ${retryCount}/${maxRetries} cho đăng bài với user ${user.piname}`);
-                  await sleep(3000 * retryCount);
-                }
-                
-                const payload = qs.stringify({
-                  gallery: imageUrl,
-                  update_country: 1,
-                  update_multi_country: JSON.stringify({ 1: 1 }),
-                  update_chain: 0,
-                  update_multi_chain: JSON.stringify({ 0: 1 }),
-                  component: "article",
-                  action: "create",
-                  title: finalTitle,
-                  content: uniqueContent,
-                  user_name: user.piname,
-                  english_version: 0,
-                  selected_country: 1,
-                  selected_chain: 0,
-                });
-                
-                const currentUrl = urlVariants[currentUrlVariantIndex];
-                
-                console.log(`>> [Task ${userIndex+1}-${i+1}] Đăng bài "${finalTitle.substring(0, 30)}..." với user ${user.piname}`);
-                const response = await api.post(currentUrl, payload);
-                
-                console.log(`>> [Task ${userIndex+1}-${i+1}] Status code: ${response.status}`);
-                
-                if (response.data && 
-                    response.data.hasOwnProperty('data') && 
-                    response.data.data && 
-                    response.data.data.status === 1) {
-                  console.log(`✅ [Task ${userIndex+1}-${i+1}] User ${user.piname} đã đăng bài thành công!`);
-                  return { success: true };
-                } else {
-                  console.log(`⚠️ [Task ${userIndex+1}-${i+1}] User ${user.piname} đăng bài không thành công:`, response.data);
-                  return { success: true };
-                }
-              } catch (error) {
-                console.error(`❌ [Task ${userIndex+1}-${i+1}] Lỗi khi đăng bài với user ${user.piname}:`, error.message);
-                
-                if (error.response) {
-                  console.error(`Mã lỗi: ${error.response.status}`);
-                  console.error(`URL gọi: ${error.config?.url}`);
-                  console.error(`URL đầy đủ: ${error.config?.baseURL}${error.config?.url}`);
-                  console.error(`Phương thức: ${error.config?.method.toUpperCase()}`);
-                  
-                  if ([404, 429, 500, 502, 503, 504].includes(error.response.status)) {
-                    retryCount++;
-                    if (retryCount <= maxRetries) {
-                      const delayTime = error.response.status === 429 ? 10000 : 3000 * retryCount;
-                      console.log(`>> [Task ${userIndex+1}-${i+1}] Sẽ thử lại sau ${delayTime/1000} giây...`);
-                      
-                      if (error.response.status === 404) {
-                        currentUrlVariantIndex = (currentUrlVariantIndex + 1) % urlVariants.length;
-                        console.error(`❗️ [Task ${userIndex+1}-${i+1}] Sẽ thử với biến thể URL mới: ${urlVariants[currentUrlVariantIndex]}`);
-                      }
-                      
-                      await sleep(delayTime);
-                      continue;
-                    }
-                  }
-                }
-                
-                return { success: true };
+      // Khởi tạo cluster manager
+      const clusterManager = new ClusterManager({ numWorkers: workerCount });
+      
+      // Sự kiện hoàn thành
+      clusterManager.on('complete', (results) => {
+        console.log(`\n>> Kết quả cuối cùng: ${results.success} bài viết đăng thành công, ${results.failure} bài viết thất bại`);
+      });
+      
+      // Khởi tạo cluster
+      const isMaster = await clusterManager.initialize();
+      
+      if (isMaster) {
+        // Phân phối tài khoản cho các worker
+        await clusterManager.distributeAccounts(postCount);
+        
+        // Đợi tất cả worker hoàn thành
+        return new Promise((resolve) => {
+          clusterManager.on('complete', (results) => {
+            resolve({
+              success: true,
+              message: `Đã đăng ${results.success}/${results.total} bài viết thành công!`,
+              stats: {
+                total: results.total,
+                success: results.success,
+                failure: results.failure,
               }
-            }
-            
-            return { success: true };
-          }
+            });
+          });
+          
+          // Thêm timeout để tránh việc chờ vô hạn
+          setTimeout(() => {
+            resolve({
+              success: true,
+              message: `Đã quá thời gian chờ. Đã đăng ${clusterManager.results.success}/${clusterManager.results.total} bài viết.`,
+              stats: { ...clusterManager.results }
+            });
+          }, 1000 * 60 * 30); // 30 phút timeout
         });
       }
-
-      // Bỏ phần xáo trộn ngẫu nhiên tasks
-      for (const { userId, task } of userTasks) {
-        await taskQueue.add(task, userId);
-      }
     }
-
-    console.log(`>> Tổng số ${allTasks.length} bài viết đã được thêm vào hàng đợi...`);
-
-    const progressInterval = setInterval(() => {
-      updateProgressStatus(taskQueue);
-      const memUsage = process.memoryUsage();
-      console.log(`\n-------- MEMORY USAGE --------`);
-      console.log(`Heap Used: ${Math.round(memUsage.heapUsed / 1024 / 1024)}MB`);
-      console.log(`Heap Total: ${Math.round(memUsage.heapTotal / 1024 / 1024)}MB`);
-      console.log(`RSS: ${Math.round(memUsage.rss / 1024 / 1024)}MB`);
-      console.log(`-----------------------------\n`);
-    }, 3000);
-
-    while (taskQueue.stats.completed < taskQueue.stats.total) {
-      await sleep(1000);
-    }
-
-    clearInterval(progressInterval);
-    updateProgressStatus(taskQueue);
-
-    const { success, failure } = taskQueue.stats;
-    console.log(`\n>> Kết quả cuối cùng: ${success} bài viết đăng thành công, ${failure} bài viết thất bại`);
-
+    
+    // Nếu đang ở worker process, không làm gì cả vì worker sẽ được quản lý bởi worker-processor.js
     return { 
       success: true,
-      message: `Đã đăng ${success}/${success + failure} bài viết thành công!`,
-      stats: {
-        total: success + failure,
-        success: success,
-        failure: failure,
-      }
+      message: "Đã khởi động các worker processes để đăng bài"
     };
   } catch (error) {
     console.error(`❌ Lỗi không xử lý được: ${error.message}`);
     return {
-      success: true,
+      success: false,
       message: `Đã xảy ra lỗi khi đăng bài: ${error.message}`,
       error: error.toString()
     };
-  } finally {
-    // Đảm bảo dọn dẹp tài nguyên
-    taskQueue.destroy();
   }
 }
 
