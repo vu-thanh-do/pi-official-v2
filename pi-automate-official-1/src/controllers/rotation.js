@@ -11,6 +11,7 @@ const ExcelReaderService = require('../models/excelSheed');
 const path = require('path');
 const handleLogin = require('./login');
 const handleLikeEachOther = require('./likeEachOther');
+const handleLikeEachOtherWithCluster = require('./likeEachOtherCluster');
 
 // Tạo event emitter để quản lý tiến độ
 const progressEmitter = new EventEmitter();
@@ -38,7 +39,7 @@ async function executeTask(task, config) {
                 break;
 
             case 'likeEachOther':
-                result = await handleLikeEachOther(count || 1);
+                result = await handleLikeEachOtherWithCluster(count || 1);
                 break;
 
             case 'like':

@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PI Manager - Quản lý Hệ thống</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: #f5f5f5;
+        }
+        .card {
+            background-color: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+        }
+        h1, h2, h3 {
+            color: #333;
+        }
+        .system-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 15px;
+        }
+        .stat-card {
+            background-color: #f8f9fa;
+            border-radius: 6px;
+            padding: 15px;
+            text-align: center;
+        }
+        .stat-card h3 {
+            margin-top: 0;
+            color: #555;
+        }
+        .stat-card .value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #0066cc;
+        }
+        .worker-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 10px;
+            margin-top: 20px;
+        }
+        .worker-item {
+            background-color: #f1f8ff;
+            border-radius: 6px;
+            padding: 10px;
+            text-align: center;
+        }
+        .settings-form {
+            max-width: 500px;
+            margin: 0 auto;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input[type="number"] {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+        button {
+            background-color: #0066cc;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #0055aa;
+        }
+        .memory-bar {
+            height: 20px;
+            width: 100%;
+            background-color: #e9ecef;
+            border-radius: 10px;
+            margin-top: 10px;
+            overflow: hidden;
+        }
+        .memory-used {
+            height: 100%;
+            background-color: #0066cc;
+            transition: width 0.5s ease;
+        }
+        .refresh-button {
+            background-color: #28a745;
+            margin-right: 10px;
+        }
+        .refresh-button:hover {
+            background-color: #218838;
+        }
+        .actions {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+        .success-message {
+            color: #28a745;
+            text-align: center;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        .error-message {
+            color: #dc3545;
+            text-align: center;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>PI Manager - Quản lý Hệ thống</h1>
+        <div class="actions">
+            <button id="refreshButton" class="refresh-button">Làm mới dữ liệu</button>
+            <button id="backButton">Quay lại</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Thông tin Hệ thống</h2>
+        <div class="system-stats">
+            <div class="stat-card">
+                <h3>CPU Cores</h3>
+                <div class="value" id="cpuCount">--</div>
+            </div>
+            <div class="stat-card">
+                <h3>Thời gian chạy (giây)</h3>
+                <div class="value" id="uptime">--</div>
+            </div>
+            <div class="stat-card">
+                <h3>RAM sử dụng</h3>
+                <div class="value" id="ramUsage">--</div>
+                <div class="memory-bar">
+                    <div class="memory-used" id="ramBar" style="width: 0%;"></div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <h3>Hệ điều hành</h3>
+                <div class="value" id="platform">--</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Quản lý Worker</h2>
+        <div class="system-stats">
+            <div class="stat-card">
+                <h3>Số lượng Worker</h3>
+                <div class="value" id="workerCount">--</div>
+            </div>
+            <div class="stat-card">
+                <h3>Giới hạn luồng</h3>
+                <div class="value" id="concurrencyLimit">--</div>
+            </div>
+        </div>
+        <div id="workerList" class="worker-list">
+            <!-- Worker items will be added here -->
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Thiết lập</h2>
+        <div class="settings-form">
+            <div id="successMessage" class="success-message" style="display: none;"></div>
+            <div id="errorMessage" class="error-message" style="display: none;"></div>
+            
+            <div class="form-group">
+                <label for="concurrencyInput">Số luồng đồng thời tối đa</label>
+                <input type="number" id="concurrencyInput" min="1" max="10000" placeholder="Nhập số luồng...">
+            </div>
+            <button id="setConcurrencyButton">Cập nhật giới hạn luồng</button>
+        </div>
+    </div>
+
+    <script>
+        // Lấy SERVER_PORT từ localStorage
+        const SERVER_PORT = localStorage.getItem('SERVER_PORT');
+        if (!SERVER_PORT) {
+            alert('Không tìm thấy thông tin SERVER_PORT!');
+        }
+
+        // Hàm API để lấy thông tin hệ thống
+        async function fetchSystemInfo() {
+            try {
+                const response = await fetch(`http://localhost:${SERVER_PORT}/system-info`);
+                const data = await response.json();
+                return data;
+            } catch (error) {
+                console.error('Lỗi khi lấy thông tin hệ thống:', error);
+                return null;
+            }
+        }
+
+        // Hàm API để thiết lập giới hạn luồng
+        async function setConcurrencyLimit(limit) {
+            try {
+                const response = await fetch(`http://localhost:${SERVER_PORT}/set-concurrency`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ concurrencyLimit: limit })
+                });
+                const data = await response.json();
+                return data;
+            } catch (error) {
+                console.error('Lỗi khi thiết lập giới hạn luồng:', error);
+                throw error;
+            }
+        }
+
+        // Cập nhật giao diện với thông tin hệ thống
+        function updateUI(data) {
+            if (!data) return;
+
+            // Thông tin hệ thống
+            document.getElementById('cpuCount').textContent = data.system.cpuCount;
+            document.getElementById('uptime').textContent = Math.round(data.system.uptime);
+            document.getElementById('platform').textContent = `${data.system.platform} (${data.system.arch})`;
+            
+            // Thông tin RAM
+            const usedMemoryPercent = data.system.memoryInfo.usedMemoryPercent;
+            document.getElementById('ramUsage').textContent = `${usedMemoryPercent}%`;
+            document.getElementById('ramBar').style.width = `${usedMemoryPercent}%`;
+            
+            // Thông tin Worker
+            document.getElementById('workerCount').textContent = data.workers.count;
+            document.getElementById('concurrencyLimit').textContent = data.workers.concurrencyLimit;
+            
+            // Danh sách Worker
+            const workerList = document.getElementById('workerList');
+            workerList.innerHTML = '';
+            
+            if (data.workers.details && data.workers.details.length > 0) {
+                data.workers.details.forEach(worker => {
+                    const workerItem = document.createElement('div');
+                    workerItem.className = 'worker-item';
+                    workerItem.innerHTML = `
+                        <div>Worker #${worker.id}</div>
+                        <div><strong>PID: ${worker.pid}</strong></div>
+                    `;
+                    workerList.appendChild(workerItem);
+                });
+            } else {
+                workerList.innerHTML = '<p>Không có worker nào đang chạy</p>';
+            }
+
+            // Cập nhật giá trị mặc định cho input
+            document.getElementById('concurrencyInput').value = data.workers.concurrencyLimit !== 'mặc định' 
+                ? data.workers.concurrencyLimit 
+                : 200;
+        }
+
+        // Hàm làm mới dữ liệu
+        async function refreshData() {
+            try {
+                const data = await fetchSystemInfo();
+                updateUI(data);
+            } catch (error) {
+                console.error('Lỗi khi làm mới dữ liệu:', error);
+                showError('Không thể lấy dữ liệu hệ thống. Vui lòng thử lại sau.');
+            }
+        }
+
+        // Hiển thị thông báo thành công
+        function showSuccess(message) {
+            const successEl = document.getElementById('successMessage');
+            const errorEl = document.getElementById('errorMessage');
+            
+            errorEl.style.display = 'none';
+            successEl.textContent = message;
+            successEl.style.display = 'block';
+            
+            setTimeout(() => {
+                successEl.style.display = 'none';
+            }, 5000);
+        }
+
+        // Hiển thị thông báo lỗi
+        function showError(message) {
+            const successEl = document.getElementById('successMessage');
+            const errorEl = document.getElementById('errorMessage');
+            
+            successEl.style.display = 'none';
+            errorEl.textContent = message;
+            errorEl.style.display = 'block';
+            
+            setTimeout(() => {
+                errorEl.style.display = 'none';
+            }, 5000);
+        }
+
+        // Khởi tạo trang
+        document.addEventListener('DOMContentLoaded', () => {
+            // Lấy dữ liệu ban đầu
+            refreshData();
+            
+            // Thiết lập làm mới tự động mỗi 10 giây
+            setInterval(refreshData, 10000);
+            
+            // Sự kiện nút làm mới
+            document.getElementById('refreshButton').addEventListener('click', refreshData);
+            
+            // Sự kiện nút quay lại
+            document.getElementById('backButton').addEventListener('click', () => {
+                window.location.href = 'mode-select.html';
+            });
+            
+            // Sự kiện nút cập nhật giới hạn luồng
+            document.getElementById('setConcurrencyButton').addEventListener('click', async () => {
+                const limitInput = document.getElementById('concurrencyInput');
+                const limit = parseInt(limitInput.value, 10);
+                
+                if (isNaN(limit) || limit <= 0) {
+                    showError('Vui lòng nhập một số dương hợp lệ');
+                    return;
+                }
+                
+                try {
+                    const result = await setConcurrencyLimit(limit);
+                    if (result.success) {
+                        showSuccess(`Đã cập nhật giới hạn luồng thành ${result.newLimit}`);
+                        refreshData(); // Làm mới dữ liệu
+                    } else {
+                        showError(result.message || 'Lỗi không xác định khi cập nhật giới hạn luồng');
+                    }
+                } catch (error) {
+                    showError('Lỗi khi gửi yêu cầu: ' + (error.message || 'Không xác định'));
+                }
+            });
+        });
+    </script>
+</body>
+</html> 

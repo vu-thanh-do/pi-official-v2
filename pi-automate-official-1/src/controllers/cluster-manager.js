@@ -7,7 +7,12 @@ const path = require("path");
 class ClusterManager extends EventEmitter {
   constructor(options = {}) {
     super();
-    this.numCPUs = options.numWorkers || os.cpus().length;
+    // Tính toán số lượng worker tối ưu - mặc định để lại 1 core cho hệ thống
+    this.numCPUs = options.numWorkers || Math.max(1, os.cpus().length - 1);
+    // Số lượng luồng đồng thời tối đa cho mỗi worker
+    this.workerConcurrencyLimit = options.concurrencyLimit || process.env.MAX_CONCURRENCY 
+      ? parseInt(process.env.MAX_CONCURRENCY, 10)
+      : 200; 
     this.workers = [];
     this.workersData = new Map(); // Lưu trữ dữ liệu cho mỗi worker
     this.results = {
@@ -26,6 +31,14 @@ class ClusterManager extends EventEmitter {
     if (cluster.isPrimary) {
       console.log(`Master process ${process.pid} đang chạy`);
       console.log(`Khởi tạo ${this.numCPUs} worker processes...`);
+      
+      // Đảm bảo workerConcurrencyLimit là số hợp lệ
+      if (isNaN(this.workerConcurrencyLimit) || this.workerConcurrencyLimit <= 0) {
+        this.workerConcurrencyLimit = 200;
+        console.log(`Phát hiện giá trị không hợp lệ, đặt lại giới hạn luồng mặc định: ${this.workerConcurrencyLimit}`);
+      }
+      
+      console.log(`Mỗi worker được cấu hình với ${this.workerConcurrencyLimit} luồng đồng thời`);
 
       // Xử lý sự kiện khi nhận lệnh thoát
       process.on('SIGTERM', () => this.shutdown());
@@ -62,7 +75,13 @@ class ClusterManager extends EventEmitter {
 
   // Tạo worker mới
   createWorker() {
-    const worker = cluster.fork();
+    // Đảm bảo giá trị concurrencyLimit là số hợp lệ trước khi truyền vào worker
+    const validConcurrencyLimit = isNaN(this.workerConcurrencyLimit) ? 2 : this.workerConcurrencyLimit;
+    
+    const worker = cluster.fork({
+      MAX_CONCURRENCY: validConcurrencyLimit.toString() // Chuyển thành string để đảm bảo truyền đúng
+    });
+    
     this.workers.push(worker);
     this.workersData.set(worker.id, {
       pid: worker.process.pid,
@@ -70,7 +89,8 @@ class ClusterManager extends EventEmitter {
       success: 0,
       failure: 0,
       completed: 0,
-      startTime: Date.now()
+      startTime: Date.now(),
+      concurrencyLimit: validConcurrencyLimit
     });
 
     // Lắng nghe message từ worker
@@ -87,6 +107,29 @@ class ClusterManager extends EventEmitter {
     });
 
     return worker;
+  }
+
+  // Thiết lập số lượng luồng đồng thời cho tất cả worker
+  setAllWorkerConcurrency(limit) {
+    if (typeof limit !== 'number' || limit <= 0) {
+      console.error(`Giá trị giới hạn luồng không hợp lệ: ${limit}`);
+      return;
+    }
+
+    console.log(`Đang đặt giới hạn luồng ${limit} cho tất cả worker...`);
+    this.workerConcurrencyLimit = limit;
+
+    // Cập nhật cho tất cả worker đang hoạt động
+    for (const worker of this.workers) {
+      if (worker.isConnected()) {
+        worker.send({
+          type: 'set-concurrency',
+          data: {
+            concurrencyLimit: limit
+          }
+        });
+      }
+    }
   }
 
   // Tắt tất cả worker
@@ -138,13 +181,13 @@ class ClusterManager extends EventEmitter {
     console.log(`\n-------- TRẠNG THÁI TIẾN ĐỘ --------`);
     console.log(`[${bar}] ${percent}% (${this.results.completed}/${this.results.total})`);
     console.log(`✅ Thành công: ${this.results.success} | ❌ Thất bại: ${this.results.failure}`);
-    console.log(`🧵 Worker đang chạy: ${this.workers.length}`);
+    console.log(`🧵 Worker đang chạy: ${this.workers.length} | 🔄 Luồng mỗi worker: ${this.workerConcurrencyLimit}`);
     
     // Hiển thị thông tin chi tiết các worker
     console.log(`\n-------- CHI TIẾT WORKER --------`);
     for (const [workerId, data] of this.workersData.entries()) {
       if (data.completed > 0) {
-        console.log(`Worker ${data.pid}: Hoàn thành ${data.completed}, Thành công: ${data.success}, Thất bại: ${data.failure}`);
+        console.log(`Worker ${data.pid}: Hoàn thành ${data.completed}, Thành công: ${data.success}, Thất bại: ${data.failure}, Luồng: ${data.concurrencyLimit || this.workerConcurrencyLimit}`);
       }
     }
     console.log(`------------------------------------------\n`);
@@ -338,28 +381,43 @@ class ClusterManager extends EventEmitter {
 
   // Cập nhật tiến trình từ các worker
   updateProgress(workerId, progressData) {
-    const { success, failure, completed, piknowedPostIds } = progressData;
-    
-    // Cập nhật thông tin chi tiết của worker
-    const workerData = this.workersData.get(workerId);
-    if (workerData) {
-      workerData.success += success || 0;
-      workerData.failure += failure || 0;
-      workerData.completed += completed || 0;
-      workerData.lastUpdate = Date.now();
-    }
-    
-    // Cập nhật tổng hợp
-    this.results.success += success || 0;
-    this.results.failure += failure || 0;
-    this.results.completed += completed || 0;
-    
-    // Thêm ID bài đã PiKnow vào danh sách tổng hợp
-    if (piknowedPostIds && Array.isArray(piknowedPostIds)) {
-      this.results.piknowedPostIds = [
-        ...this.results.piknowedPostIds,
-        ...piknowedPostIds
-      ];
+    try {
+      if (!progressData) return;
+
+      const { success, failure, completed, piknowedPostIds, likeResult } = progressData;
+      
+      // Cập nhật thông tin chi tiết của worker
+      const workerData = this.workersData.get(workerId);
+      if (workerData) {
+        workerData.success += success || 0;
+        workerData.failure += failure || 0;
+        workerData.completed += completed || 0;
+        workerData.lastUpdate = Date.now();
+      }
+      
+      // Cập nhật tổng hợp
+      this.results.success += success || 0;
+      this.results.failure += failure || 0;
+      this.results.completed += completed || 0;
+      
+      // Thêm ID bài đã PiKnow vào danh sách tổng hợp
+      if (piknowedPostIds && Array.isArray(piknowedPostIds)) {
+        this.results.piknowedPostIds = [
+          ...this.results.piknowedPostIds,
+          ...piknowedPostIds
+        ];
+      }
+      
+      // Nếu là LikeEachOtherManager, xử lý kết quả like
+      if (likeResult && typeof this.updateLikeResult === 'function') {
+        try {
+          this.updateLikeResult(workerId, likeResult);
+        } catch (error) {
+          console.error(`Lỗi khi xử lý kết quả like cho worker ${workerId}:`, error);
+        }
+      }
+    } catch (error) {
+      console.error(`Lỗi không xử lý được trong updateProgress:`, error);
     }
   }
 

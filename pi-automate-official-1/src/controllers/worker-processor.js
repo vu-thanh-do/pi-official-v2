@@ -15,8 +15,14 @@ function sendLog(message) {
 
 class WorkerProcessor {
   constructor() {
+    // Lấy giá trị MAX_CONCURRENCY từ môi trường hoặc sử dụng giá trị mặc định
+    const maxConcurrency = process.env.MAX_CONCURRENCY 
+      ? parseInt(process.env.MAX_CONCURRENCY, 10) 
+      : 50; // [THAY ĐỔI] Mặc định là 50 luồng, giảm từ 200
+      
     this.taskQueue = [];
-    this.concurrencyLimit = 50; // Số lượng tác vụ đồng thời tối đa trong một worker
+    // Đảm bảo concurrencyLimit là một số hợp lệ, không phải NaN
+    this.concurrencyLimit = isNaN(maxConcurrency) ? 50 : maxConcurrency; 
     this.runningTasks = 0;
     this.results = {
       success: 0,
@@ -25,8 +31,9 @@ class WorkerProcessor {
       total: 0
     };
     this.piknowedPostIds = []; // Lưu trữ ID các bài đã PiKnow
+    this.lastLikeResult = null; // Lưu kết quả like cuối cùng để gửi về master
 
-    sendLog(`Worker ${process.pid} đã khởi động và đang chờ nhiệm vụ...`);
+    sendLog(`Worker ${process.pid} đã khởi động với giới hạn ${this.concurrencyLimit} luồng đồng thời`);
 
     // Lắng nghe message từ master process
     process.on('message', (message) => {
@@ -34,6 +41,10 @@ class WorkerProcessor {
         this.processAccounts(message.data);
       } else if (message.type === 'piknow-accounts') {
         this.processPiKnowAccounts(message.data);
+      } else if (message.type === 'set-concurrency') {
+        this.setConcurrencyLimit(message.data.concurrencyLimit);
+      } else if (message.type === 'like-tasks') {
+        this.processLikeTasks(message.data);
       }
     });
 
@@ -50,6 +61,16 @@ class WorkerProcessor {
     });
   }
 
+  // Hàm để điều chỉnh concurrencyLimit từ bên ngoài
+  setConcurrencyLimit(limit) {
+    if (typeof limit === 'number' && limit > 0) {
+      sendLog(`Đang thay đổi giới hạn luồng từ ${this.concurrencyLimit} thành ${limit}`);
+      this.concurrencyLimit = limit;
+    } else {
+      sendLog(`Giá trị giới hạn luồng không hợp lệ: ${limit}`);
+    }
+  }
+
   // Dọn dẹp tài nguyên
   cleanup() {
     clearInterval(this.progressInterval);
@@ -59,8 +80,36 @@ class WorkerProcessor {
   // Gửi tiến trình về master process
   reportProgress() {
     const { success, failure, completed, total } = this.results;
+    const lastLikeResult = this.lastLikeResult; // Lưu kết quả like cuối cùng
     
-    if (completed > 0 && process.send) {
+    if (this.results.total === 0 && this.taskQueue.length === 0 && this.runningTasks === 0) {
+      const currentTime = new Date().toLocaleTimeString();
+    
+      
+      if (process.send) {
+        process.send({
+          type: 'progress',
+          data: {
+            success: 0,
+            failure: 0,
+            completed: 0,
+            total: 0,
+            pid: process.pid,
+            status: 'waiting',
+            concurrencyLimit: this.concurrencyLimit,
+            runningTasks: 0,
+            queuedTasks: 0
+          }
+        });
+      }
+      
+      return;
+    }
+    
+    if (process.send) {
+      // Xóa kết quả like đã gửi
+      this.lastLikeResult = null;
+
       process.send({
         type: 'progress',
         data: {
@@ -69,13 +118,17 @@ class WorkerProcessor {
           completed: completed,
           total: total,
           pid: process.pid,
-          piknowedPostIds: this.piknowedPostIds.slice() // Gửi bản sao mảng ID đã PiKnow
+          piknowedPostIds: this.piknowedPostIds.slice(), // Gửi bản sao mảng ID đã PiKnow
+          concurrencyLimit: this.concurrencyLimit,
+          runningTasks: this.runningTasks,
+          queuedTasks: this.taskQueue.length,
+          likeResult: lastLikeResult // Gửi kết quả like nếu có
         }
       });
       
       // Hiển thị tiến độ 
       const percent = total > 0 ? Math.floor((completed / total) * 100) : 0;
-      sendLog(`Tiến độ: ${percent}% | Thành công: ${success}, Thất bại: ${failure}, Hoàn thành: ${completed}/${total}`);
+      sendLog(`Tiến độ: ${percent}% | Thành công: ${success}, Thất bại: ${failure}, Hoàn thành: ${completed}/${total} | Luồng: ${this.runningTasks}/${this.concurrencyLimit}`);
       
       // Reset các biến đếm để không bị đếm lại
       this.results.success = 0;
@@ -87,6 +140,7 @@ class WorkerProcessor {
     // Kiểm tra nếu đã hoàn thành tất cả công việc
     if (this.results.total > 0 && completed >= this.results.total && this.taskQueue.length === 0 && this.runningTasks === 0) {
       if (process.send) {
+        sendLog(`✅ Worker ${process.pid} đã hoàn thành tất cả nhiệm vụ!`);
         process.send({
           type: 'complete',
           data: {
@@ -279,6 +333,11 @@ class WorkerProcessor {
       } else {
         this.results.failure++;
       }
+      
+      // Lưu kết quả like để gửi về master
+      if (result.details) {
+        this.lastLikeResult = result;
+      }
     } catch (error) {
       sendLog(`Lỗi khi thực thi tác vụ: ${error.message}`);
       this.results.failure++;
@@ -287,8 +346,12 @@ class WorkerProcessor {
       this.runningTasks--;
       
       // Tiếp tục xử lý hàng đợi
-      setImmediate(() => this.processQueue());
+      if (this.taskQueue.length > 0) {
+        setImmediate(() => this.processQueue());
+      }
     }
+    
+    return true; // Trả về true để Promise.all có thể theo dõi
   }
   
   // Đăng một bài viết
@@ -610,6 +673,276 @@ class WorkerProcessor {
   
   generateUniqueContent(contents) {
     return this.generateMixedContent(contents, 3, 5);
+  }
+
+  // Thêm phương thức xử lý nhiệm vụ like
+  async processLikeTasks(data) {
+    try {
+      const { accounts, likeTasks, userPosts } = data;
+      
+      if (!likeTasks || !Array.isArray(likeTasks) || likeTasks.length === 0) {
+        sendLog("Không nhận được nhiệm vụ like hoặc danh sách trống!");
+        return;
+      }
+      
+      sendLog(`Nhận được ${accounts?.length || 0} tài khoản và ${likeTasks.length} nhiệm vụ like`);
+      
+      // Thiết lập tổng số task
+      this.results.total = likeTasks.length;
+      
+      // Tạo map của tài khoản để dễ dàng tìm kiếm
+      const accountMap = new Map();
+      if (accounts && Array.isArray(accounts)) {
+        accounts.forEach(account => {
+          if (account && account.uid) {
+            accountMap.set(account.uid, account);
+          }
+        });
+      }
+      
+      // Kiểm tra và lọc các nhiệm vụ hợp lệ
+      const validTasks = likeTasks.filter(task => {
+        if (!task || !task.sourceUid || !task.targetUid || !task.postId) {
+          sendLog(`Bỏ qua task không hợp lệ: ${JSON.stringify(task)}`);
+          this.results.failure++;
+          this.results.completed++;
+          return false;
+        }
+        return true;
+      });
+      
+      sendLog(`Có ${validTasks.length}/${likeTasks.length} nhiệm vụ like hợp lệ`);
+      
+      // === THÊM MỚI: Phân phối các nhiệm vụ like với delay giữa các nhiệm vụ ===
+      // Không thêm tất cả các nhiệm vụ cùng lúc vào hàng đợi
+      // Thay vào đó, thêm một nhóm nhỏ rồi đợi, sau đó thêm nhóm tiếp theo
+      const LIKE_BATCH_SIZE = 10; // Xử lý 10 nhiệm vụ like mỗi lần
+      
+      // Chia nhiệm vụ thành các nhóm nhỏ
+      const likeBatches = [];
+      for (let i = 0; i < validTasks.length; i += LIKE_BATCH_SIZE) {
+        likeBatches.push(validTasks.slice(i, i + LIKE_BATCH_SIZE));
+      }
+      
+      sendLog(`Chia ${validTasks.length} nhiệm vụ like thành ${likeBatches.length} nhóm để tránh lỗi 429`);
+      
+      // Xử lý từng nhóm nhiệm vụ để tránh gửi quá nhiều request cùng lúc
+      for (let batchIndex = 0; batchIndex < likeBatches.length; batchIndex++) {
+        const batch = likeBatches[batchIndex];
+        
+        // Thêm delay giữa các nhóm
+        if (batchIndex > 0) {
+          const batchDelay = 2000; // 2 giây giữa các nhóm
+          sendLog(`Đợi ${batchDelay/1000} giây trước khi xử lý nhóm like tiếp theo...`);
+          await this.sleep(batchDelay);
+        }
+        
+        // Thêm các nhiệm vụ trong nhóm này vào hàng đợi
+        for (const task of batch) {
+          const account = accountMap.get(task.sourceUid);
+          if (!account) {
+            sendLog(`Không tìm thấy thông tin tài khoản cho uid ${task.sourceUid}`);
+            this.results.failure++;
+            this.results.completed++;
+            continue;
+          }
+          
+          this.taskQueue.push(async () => {
+            return this.performLike(account, task, userPosts);
+          });
+        }
+        
+        sendLog(`Đã thêm ${batch.length} tác vụ like vào hàng đợi (nhóm ${batchIndex + 1}/${likeBatches.length})`);
+        
+        // Xử lý hàng đợi với concurrency giới hạn
+        const maxConcurrency = Math.min(this.concurrencyLimit, 5); // Giảm concurrency để tránh lỗi 429
+        
+        // Khởi tạo các luồng xử lý
+        const processingThreads = [];
+        for (let i = 0; i < maxConcurrency; i++) {
+          processingThreads.push(this.processQueue());
+        }
+        
+        // Đợi xử lý xong các tác vụ trong nhóm hiện tại
+        await Promise.all(processingThreads.filter(Boolean));
+        
+        // Đợi thêm một chút thời gian để đảm bảo tất cả tác vụ đã hoàn thành
+        if (this.taskQueue.length === 0 && this.runningTasks === 0) {
+          sendLog(`Đã hoàn thành tất cả tác vụ like trong nhóm ${batchIndex + 1}`);
+        } else {
+          // Đợi thêm thời gian nếu vẫn còn nhiệm vụ đang chạy
+          while (this.taskQueue.length > 0 || this.runningTasks > 0) {
+            sendLog(`Đang đợi ${this.runningTasks} tác vụ hoàn thành và ${this.taskQueue.length} tác vụ trong hàng đợi...`);
+            await this.sleep(1000);
+          }
+        }
+      }
+      
+      sendLog("Đã hoàn thành tất cả nhiệm vụ like");
+    } catch (error) {
+      sendLog(`Lỗi khi xử lý nhiệm vụ like: ${error.message}`);
+      
+      if (process.send) {
+        process.send({
+          type: 'error',
+          data: {
+            error: error.message,
+            stack: error.stack
+          }
+        });
+      }
+    }
+  }
+
+  // Thực hiện like một bài viết
+  async performLike(user, task, userPosts) {
+    try {
+      sendLog(`User ${user.piname} đang like bài viết của ${task.targetPiname} (postId: ${task.postId})`);
+      
+      // Đảm bảo task có đầy đủ thông tin cần thiết
+      if (!task.postId || !task.sourceUid || !task.targetUid) {
+        sendLog(`⚠️ Thiếu thông tin cần thiết để thực hiện like: postId=${task.postId}, sourceUid=${task.sourceUid}, targetUid=${task.targetUid}`);
+        return { 
+          success: false, 
+          details: {
+            sourceUid: task.sourceUid || 'unknown',
+            targetUid: task.targetUid || 'unknown',
+            sourcePiname: task.sourcePiname || 'unknown',
+            targetPiname: task.targetPiname || 'unknown',
+            postId: task.postId || 'unknown',
+            error: "Thiếu thông tin cần thiết"
+          }
+        };
+      }
+      
+      const api = apiClient(user);
+      
+      // === THÊM MỚI: Thêm delay ngẫu nhiên trước khi like để tránh mẫu request dễ đoán ===
+      const initialDelay = 500 + Math.floor(Math.random() * 1000); // Delay ngẫu nhiên từ 0.5-1.5 giây
+      await this.sleep(initialDelay);
+      
+      // Sử dụng logic giống như trong handleLikeEachOther
+      const maxRetries = 3; // [THAY ĐỔI] Tăng số lần thử lại từ 2 lên 3
+      let retryCount = 0;
+      
+      while (retryCount <= maxRetries) {
+        try {
+          if (retryCount > 0) {
+            const retryDelay = 3000 * (retryCount + 1); // Tăng dần thời gian chờ giữa các lần thử: 6s, 9s, 12s
+            sendLog(`Thử lại lần ${retryCount}/${maxRetries}, đợi ${retryDelay/1000} giây...`);
+            await this.sleep(retryDelay);
+          }
+
+          const payload = qs.stringify({
+            component: "article",
+            action: "like",
+            aid: task.postId,
+            user_name: user.piname,
+            english_version: 0,
+            selected_country: 1,
+            selected_chain: 0,
+          });
+
+          const response = await api.post('/vapi', payload);
+          
+          if (response.data && response.data.time) {
+            // === THÊM MỚI: Delay sau khi like thành công để tránh lỗi 429 ===
+            const successDelay = 300 + Math.floor(Math.random() * 500); // 300-800ms
+            await this.sleep(successDelay);
+            
+            sendLog(`✅ User ${user.piname} đã like thành công bài viết của ${task.targetPiname}`);
+            return { 
+              success: true, 
+              details: {
+                sourceUid: task.sourceUid,
+                targetUid: task.targetUid,
+                sourcePiname: task.sourcePiname,
+                targetPiname: task.targetPiname,
+                postId: task.postId
+              }
+            };
+          } else {
+            sendLog(`⚠️ User ${user.piname} like bài viết của ${task.targetPiname} thất bại: ${JSON.stringify(response.data)}`);
+            return { 
+              success: false, 
+              details: {
+                sourceUid: task.sourceUid,
+                targetUid: task.targetUid,
+                sourcePiname: task.sourcePiname,
+                targetPiname: task.targetPiname,
+                postId: task.postId,
+                error: "Phản hồi API không hợp lệ"
+              }
+            };
+          }
+        } catch (error) {
+          // === THÊM MỚI: Xử lý cụ thể hơn cho lỗi 429 ===
+          if (error.response && error.response.status === 429) {
+            sendLog(`⚠️ Lỗi 429 (Too Many Requests) khi like bài ${task.postId}. Đợi lâu hơn...`);
+            retryCount++;
+            if (retryCount <= maxRetries) {
+              // Đợi lâu hơn khi gặp lỗi 429: 10s, 15s, 20s
+              const cooldownDelay = 10000 + (retryCount * 5000);
+              sendLog(`Đang làm mát (cooling down) trong ${cooldownDelay/1000} giây...`);
+              await this.sleep(cooldownDelay);
+              continue;
+            }
+          } else if (error.response && [500, 502, 503, 504].includes(error.response.status)) {
+            sendLog(`❌ Lỗi máy chủ ${error.response.status} khi like bài ${task.postId}: ${error.message}`);
+            retryCount++;
+            if (retryCount <= maxRetries) {
+              await this.sleep(5000 * retryCount);
+              continue;
+            }
+          } else {
+            sendLog(`❌ Lỗi khi like bài ${task.postId}: ${error.message}`);
+            // Thử lại với lỗi khác
+            retryCount++;
+            if (retryCount <= maxRetries) {
+              await this.sleep(3000 * retryCount);
+              continue;
+            }
+          }
+          
+          return { 
+            success: false, 
+            details: {
+              sourceUid: task.sourceUid,
+              targetUid: task.targetUid,
+              sourcePiname: task.sourcePiname,
+              targetPiname: task.targetPiname,
+              postId: task.postId,
+              error: error.message
+            }
+          };
+        }
+      }
+      
+      return { 
+        success: false, 
+        details: {
+          sourceUid: task.sourceUid,
+          targetUid: task.targetUid,
+          sourcePiname: task.sourcePiname,
+          targetPiname: task.targetPiname,
+          postId: task.postId,
+          error: "Đã thử hết số lần thử lại"
+        }
+      };
+    } catch (error) {
+      sendLog(`❌ Lỗi không xử lý được: ${error.message}`);
+      return { 
+        success: false, 
+        details: {
+          sourceUid: task.sourceUid || 'unknown',
+          targetUid: task.targetUid || 'unknown',
+          sourcePiname: task.sourcePiname || 'unknown',
+          targetPiname: task.targetPiname || 'unknown',
+          postId: task.postId || 'unknown',
+          error: error.message
+        }
+      };
+    }
   }
 }
 

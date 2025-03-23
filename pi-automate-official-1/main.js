@@ -12,6 +12,8 @@ const handleLikeEachOther = require('./src/controllers/likeEachOther');
 const handleLogin = require('./src/controllers/login');
 const { startRotation, stopRotation, rotationProgress } = require('./src/controllers/rotation');
 const getPort = require('get-port');
+const os = require('os');
+const handleLikeEachOtherWithCluster = require('./src/controllers/likeEachOtherCluster');
 
 let mainWindow;
 let logWindow;
@@ -19,6 +21,7 @@ let expressServer;
 let serverPort;
 let isSequentialRunning = false;
 let shouldStopSequential = false;
+let activeClusterManager = null;
 
 // Thiết lập đường dẫn cluster worker
 cluster.setupMaster({
@@ -152,7 +155,7 @@ async function startExpressServer() {
             }
             if (likeEachOther > 0) {
                 console.log(`Thực hiện like chéo ${likeEachOther} lần...`);
-                tasks.push(handleLikeEachOther(likeEachOther));
+                tasks.push(handleLikeEachOtherWithCluster(likeEachOther));
             }
 
             const results = await Promise.allSettled(tasks);
@@ -208,6 +211,87 @@ async function startExpressServer() {
         });
     });
 
+    // Thêm endpoint để điều chỉnh số lượng luồng
+    server.post('/set-concurrency', (req, res) => {
+        try {
+            const { concurrencyLimit } = req.body;
+            
+            if (!concurrencyLimit || typeof concurrencyLimit !== 'number' || concurrencyLimit <= 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Vui lòng cung cấp giá trị concurrencyLimit hợp lệ (số dương)"
+                });
+            }
+
+            // Đặt giá trị môi trường
+            process.env.MAX_CONCURRENCY = concurrencyLimit.toString();
+            console.log(`Đã đặt giá trị MAX_CONCURRENCY = ${concurrencyLimit}`);
+
+            // Nếu đã có ClusterManager đang hoạt động, cập nhật luôn
+            if (activeClusterManager) {
+                activeClusterManager.setAllWorkerConcurrency(concurrencyLimit);
+                console.log(`Đã cập nhật giới hạn luồng cho tất cả worker hiện có`);
+            }
+
+            res.json({
+                success: true,
+                message: `Đã thiết lập giới hạn luồng thành ${concurrencyLimit}`,
+                newLimit: concurrencyLimit
+            });
+        } catch (error) {
+            console.error('Lỗi khi thiết lập concurrency:', error);
+            res.status(500).json({
+                success: false,
+                message: "Lỗi xử lý yêu cầu",
+                error: error.message
+            });
+        }
+    });
+
+    // Thêm endpoint để lấy thông tin hệ thống
+    server.get('/system-info', (req, res) => {
+        const cpuCount = os.cpus().length;
+        const memoryInfo = {
+            totalMemory: os.totalmem(),
+            freeMemory: os.freemem(),
+            usedMemoryPercent: ((os.totalmem() - os.freemem()) / os.totalmem() * 100).toFixed(2)
+        };
+        
+        // Tính tài nguyên đang dùng
+        const processMemory = process.memoryUsage();
+        const workerInfo = activeClusterManager 
+            ? activeClusterManager.workers.map(w => ({
+                id: w.id,
+                pid: w.process.pid
+            }))
+            : [];
+
+        res.json({
+            success: true,
+            system: {
+                cpuCount,
+                memoryInfo,
+                platform: os.platform(),
+                arch: os.arch(),
+                uptime: os.uptime(),
+                processUptime: process.uptime()
+            },
+            process: {
+                pid: process.pid,
+                memoryUsage: {
+                    rss: Math.round(processMemory.rss / 1024 / 1024) + ' MB',
+                    heapTotal: Math.round(processMemory.heapTotal / 1024 / 1024) + ' MB',
+                    heapUsed: Math.round(processMemory.heapUsed / 1024 / 1024) + ' MB'
+                }
+            },
+            workers: {
+                count: workerInfo.length,
+                concurrencyLimit: process.env.MAX_CONCURRENCY || 'mặc định',
+                details: workerInfo
+            }
+        });
+    });
+
     expressServer = server.listen(port, () => {
         console.log(`Server đang chạy tại port ${port} (PID: ${process.pid})`);
     });
@@ -247,4 +331,18 @@ if (cluster.isPrimary) {
             cluster.workers[id].kill();
         }
     });
-} 
+}
+
+// Export biến activeClusterManager để có thể được truy cập từ controllers
+global.activeClusterManager = null;
+
+// Xuất các biến toàn cục
+module.exports = {
+    get activeClusterManager() {
+        return global.activeClusterManager;
+    },
+    set activeClusterManager(manager) {
+        global.activeClusterManager = manager;
+        activeClusterManager = manager;
+    }
+}; 

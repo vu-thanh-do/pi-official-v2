@@ -10,6 +10,7 @@ const ExcelReaderService = require("../models/excelSheed");
 const { cpus } = require('os');
 const cluster = require('cluster');
 const ClusterManager = require('./cluster-manager');
+const activeClusterManager = require('../../main').activeClusterManager;
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -244,7 +245,17 @@ async function handlePiKnow(req) {
       const workerCount = Math.max(1, availableCores - 1);
       console.log(`>> Khởi tạo ${workerCount} worker processes...`);
       
-      const clusterManager = new ClusterManager({ numWorkers: workerCount });
+      const maxConcurrency = process.env.MAX_CONCURRENCY ? 
+        parseInt(process.env.MAX_CONCURRENCY, 10) : 200;
+      
+      const clusterManager = new ClusterManager({ 
+        numWorkers: workerCount,
+        concurrencyLimit: maxConcurrency
+      });
+      
+      if (typeof global.activeClusterManager !== 'undefined') {
+        global.activeClusterManager = clusterManager;
+      }
       
       clusterManager.on('complete', (results) => {
         console.log(`\n>> Kết quả cuối cùng: ${results.success} PiKnow thành công, ${results.failure} PiKnow thất bại`);

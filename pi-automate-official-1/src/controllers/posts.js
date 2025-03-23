@@ -7,6 +7,9 @@ const { cpus } = require('os');
 const cluster = require('cluster');
 const ClusterManager = require('./cluster-manager');
 
+// Thêm tham chiếu tới activeClusterManager của main
+const activeClusterManager = require('../../main').activeClusterManager;
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -249,7 +252,7 @@ function generateUniqueContent(contents) {
   return generateMixedContent(contents, 3, 5);
 }
 
-// Cập nhật hàm handlePostArticles để sử dụng cluster
+// Cập nhật handlePostArticles để lưu trữ tham chiếu
 async function handlePostArticles(req) {
   try {
     const postCount = req;
@@ -267,8 +270,20 @@ async function handlePostArticles(req) {
       const workerCount = Math.max(1, availableCores - 1);
       console.log(`>> Khởi tạo ${workerCount} worker processes...`);
       
+      // Đọc giá trị MAX_CONCURRENCY từ môi trường nếu có
+      const maxConcurrency = process.env.MAX_CONCURRENCY ? 
+        parseInt(process.env.MAX_CONCURRENCY, 10) : 200;
+      
       // Khởi tạo cluster manager
-      const clusterManager = new ClusterManager({ numWorkers: workerCount });
+      const clusterManager = new ClusterManager({ 
+        numWorkers: workerCount,
+        concurrencyLimit: maxConcurrency
+      });
+      
+      // Lưu tham chiếu vào biến global
+      if (typeof global.activeClusterManager !== 'undefined') {
+        global.activeClusterManager = clusterManager;
+      }
       
       // Sự kiện hoàn thành
       clusterManager.on('complete', (results) => {
