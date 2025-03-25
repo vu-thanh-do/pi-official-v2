@@ -15,14 +15,22 @@ function sendLog(message) {
 
 class WorkerProcessor {
   constructor() {
+    // [CHỈNH SỬA] Giảm giá trị MAX_CONCURRENCY mặc định
     // Lấy giá trị MAX_CONCURRENCY từ môi trường hoặc sử dụng giá trị mặc định
     const maxConcurrency = process.env.MAX_CONCURRENCY 
       ? parseInt(process.env.MAX_CONCURRENCY, 10) 
-      : 50; // [THAY ĐỔI] Mặc định là 50 luồng, giảm từ 200
+      : 20; // [CHỈNH SỬA] Mặc định là 20 luồng, giảm từ 50
       
     this.taskQueue = [];
     // Đảm bảo concurrencyLimit là một số hợp lệ, không phải NaN
-    this.concurrencyLimit = isNaN(maxConcurrency) ? 50 : maxConcurrency; 
+    this.concurrencyLimit = isNaN(maxConcurrency) ? 20 : maxConcurrency; 
+    
+    // [CHỈNH SỬA] Giới hạn tối đa giá trị concurrencyLimit là 50
+    if (this.concurrencyLimit > 50) {
+      sendLog(`⚠️ Giới hạn luồng ${this.concurrencyLimit} quá cao, có thể gây lỗi 429. Giảm xuống 50.`);
+      this.concurrencyLimit = 50;
+    }
+    
     this.runningTasks = 0;
     this.results = {
       success: 0,
@@ -64,6 +72,12 @@ class WorkerProcessor {
   // Hàm để điều chỉnh concurrencyLimit từ bên ngoài
   setConcurrencyLimit(limit) {
     if (typeof limit === 'number' && limit > 0) {
+      // [CHỈNH SỬA] Giới hạn tối đa là 50 luồng
+      if (limit > 50) {
+        sendLog(`⚠️ Giới hạn luồng ${limit} quá cao, có thể gây lỗi 429. Giảm xuống 50.`);
+        limit = 50;
+      }
+      
       sendLog(`Đang thay đổi giới hạn luồng từ ${this.concurrencyLimit} thành ${limit}`);
       this.concurrencyLimit = limit;
     } else {
@@ -713,27 +727,65 @@ class WorkerProcessor {
       
       sendLog(`Có ${validTasks.length}/${likeTasks.length} nhiệm vụ like hợp lệ`);
       
-      // === THÊM MỚI: Phân phối các nhiệm vụ like với delay giữa các nhiệm vụ ===
-      // Không thêm tất cả các nhiệm vụ cùng lúc vào hàng đợi
-      // Thay vào đó, thêm một nhóm nhỏ rồi đợi, sau đó thêm nhóm tiếp theo
-      const LIKE_BATCH_SIZE = 10; // Xử lý 10 nhiệm vụ like mỗi lần
+      // === CHỈNH SỬA: Phân tán các lần like của cùng một người dùng ===
+      // Nhóm các nhiệm vụ theo người dùng nguồn (người thực hiện like)
+      const tasksByUser = new Map();
+      validTasks.forEach(task => {
+        if (!tasksByUser.has(task.sourceUid)) {
+          tasksByUser.set(task.sourceUid, []);
+        }
+        tasksByUser.get(task.sourceUid).push(task);
+      });
       
-      // Chia nhiệm vụ thành các nhóm nhỏ
+      // Giảm kích thước lô xuống 4 (thay vì 5)
+      const LIKE_BATCH_SIZE = 4;
+      
+      // Tạo các lô đảm bảo phân tán nhiệm vụ của cùng người dùng
       const likeBatches = [];
-      for (let i = 0; i < validTasks.length; i += LIKE_BATCH_SIZE) {
-        likeBatches.push(validTasks.slice(i, i + LIKE_BATCH_SIZE));
+      let currentBatch = [];
+      
+      // Set để theo dõi người dùng đã xuất hiện trong batch hiện tại
+      const usersInCurrentBatch = new Set();
+      
+      // Lặp qua từng nhiệm vụ và phân bổ vào các lô
+      for (const task of validTasks) {
+        // Nếu người dùng này đã có trong batch hiện tại, và batch chưa đầy,
+        // hoặc nếu batch đã đầy, tạo batch mới
+        if (usersInCurrentBatch.has(task.sourceUid) || currentBatch.length >= LIKE_BATCH_SIZE) {
+          if (currentBatch.length > 0) {
+            likeBatches.push([...currentBatch]);
+            currentBatch = [];
+            usersInCurrentBatch.clear();
+          }
+        }
+        
+        // Thêm task vào batch hiện tại
+        currentBatch.push(task);
+        usersInCurrentBatch.add(task.sourceUid);
+        
+        // Nếu batch đã đầy, lưu lại và tạo batch mới
+        if (currentBatch.length >= LIKE_BATCH_SIZE) {
+          likeBatches.push([...currentBatch]);
+          currentBatch = [];
+          usersInCurrentBatch.clear();
+        }
       }
       
-      sendLog(`Chia ${validTasks.length} nhiệm vụ like thành ${likeBatches.length} nhóm để tránh lỗi 429`);
+      // Thêm batch cuối cùng nếu còn
+      if (currentBatch.length > 0) {
+        likeBatches.push(currentBatch);
+      }
+      
+      sendLog(`Chia ${validTasks.length} nhiệm vụ like thành ${likeBatches.length} nhóm, đảm bảo phân tán nhiệm vụ của cùng một người dùng`);
       
       // Xử lý từng nhóm nhiệm vụ để tránh gửi quá nhiều request cùng lúc
       for (let batchIndex = 0; batchIndex < likeBatches.length; batchIndex++) {
         const batch = likeBatches[batchIndex];
         
-        // Thêm delay giữa các nhóm
+        // Thêm delay giữa các nhóm - tăng lên 6-10 giây
         if (batchIndex > 0) {
-          const batchDelay = 2000; // 2 giây giữa các nhóm
-          sendLog(`Đợi ${batchDelay/1000} giây trước khi xử lý nhóm like tiếp theo...`);
+          const batchDelay = 6000 + Math.floor(Math.random() * 4000); // 6-10 giây giữa các nhóm
+          sendLog(`Đợi ${batchDelay/1000} giây trước khi xử lý nhóm like tiếp theo (${batchIndex+1}/${likeBatches.length})...`);
           await this.sleep(batchDelay);
         }
         
@@ -754,8 +806,8 @@ class WorkerProcessor {
         
         sendLog(`Đã thêm ${batch.length} tác vụ like vào hàng đợi (nhóm ${batchIndex + 1}/${likeBatches.length})`);
         
-        // Xử lý hàng đợi với concurrency giới hạn
-        const maxConcurrency = Math.min(this.concurrencyLimit, 5); // Giảm concurrency để tránh lỗi 429
+        // === CHỈNH SỬA: Giảm concurrency để tránh lỗi 429 ===
+        const maxConcurrency = Math.min(this.concurrencyLimit, 2); // Giảm concurrency từ 3 xuống 2
         
         // Khởi tạo các luồng xử lý
         const processingThreads = [];
@@ -769,11 +821,25 @@ class WorkerProcessor {
         // Đợi thêm một chút thời gian để đảm bảo tất cả tác vụ đã hoàn thành
         if (this.taskQueue.length === 0 && this.runningTasks === 0) {
           sendLog(`Đã hoàn thành tất cả tác vụ like trong nhóm ${batchIndex + 1}`);
+          
+          // === CHỈNH SỬA: Tăng thời gian nghỉ bổ sung sau khi hoàn thành mỗi nhóm ===
+          if (batchIndex < likeBatches.length - 1) {
+            const cooldownDelay = 4000 + Math.floor(Math.random() * 3000); // 4-7 giây nghỉ bổ sung
+            sendLog(`Thêm ${cooldownDelay/1000} giây nghỉ bổ sung sau khi hoàn thành nhóm ${batchIndex + 1}...`);
+            await this.sleep(cooldownDelay);
+          }
         } else {
           // Đợi thêm thời gian nếu vẫn còn nhiệm vụ đang chạy
           while (this.taskQueue.length > 0 || this.runningTasks > 0) {
             sendLog(`Đang đợi ${this.runningTasks} tác vụ hoàn thành và ${this.taskQueue.length} tác vụ trong hàng đợi...`);
             await this.sleep(1000);
+          }
+          
+          // === CHỈNH SỬA: Tăng thời gian nghỉ bổ sung sau khi đợi hoàn thành nhóm ===
+          if (batchIndex < likeBatches.length - 1) {
+            const cooldownDelay = 4000 + Math.floor(Math.random() * 3000); // 4-7 giây nghỉ bổ sung
+            sendLog(`Thêm ${cooldownDelay/1000} giây nghỉ bổ sung sau khi hoàn thành nhóm ${batchIndex + 1}...`);
+            await this.sleep(cooldownDelay);
           }
         }
       }
@@ -817,8 +883,9 @@ class WorkerProcessor {
       
       const api = apiClient(user);
       
-      // === THÊM MỚI: Thêm delay ngẫu nhiên trước khi like để tránh mẫu request dễ đoán ===
-      const initialDelay = 500 + Math.floor(Math.random() * 1000); // Delay ngẫu nhiên từ 0.5-1.5 giây
+      // === CHỈNH SỬA: Tăng độ trễ trước khi like để tránh mẫu request dễ đoán ===
+      const initialDelay = 3000 + Math.floor(Math.random() * 2000); // Delay từ 3-5 giây
+      sendLog(`Đợi ${initialDelay/1000} giây trước khi like...`);
       await this.sleep(initialDelay);
       
       // Sử dụng logic giống như trong handleLikeEachOther
@@ -828,7 +895,7 @@ class WorkerProcessor {
       while (retryCount <= maxRetries) {
         try {
           if (retryCount > 0) {
-            const retryDelay = 3000 * (retryCount + 1); // Tăng dần thời gian chờ giữa các lần thử: 6s, 9s, 12s
+            const retryDelay = 5000 * (retryCount + 1); // Tăng dần thời gian chờ giữa các lần thử: 10s, 15s, 20s
             sendLog(`Thử lại lần ${retryCount}/${maxRetries}, đợi ${retryDelay/1000} giây...`);
             await this.sleep(retryDelay);
           }
@@ -846,8 +913,9 @@ class WorkerProcessor {
           const response = await api.post('/vapi', payload);
           
           if (response.data && response.data.time) {
-            // === THÊM MỚI: Delay sau khi like thành công để tránh lỗi 429 ===
-            const successDelay = 300 + Math.floor(Math.random() * 500); // 300-800ms
+            // === CHỈNH SỬA: Tăng độ trễ sau khi like thành công để tránh lỗi 429 ===
+            const successDelay = 1500 + Math.floor(Math.random() * 1500); // 1.5-3 giây
+            sendLog(`✅ Like thành công, đợi thêm ${successDelay/1000} giây để tránh lỗi 429...`);
             await this.sleep(successDelay);
             
             sendLog(`✅ User ${user.piname} đã like thành công bài viết của ${task.targetPiname}`);
@@ -876,13 +944,13 @@ class WorkerProcessor {
             };
           }
         } catch (error) {
-          // === THÊM MỚI: Xử lý cụ thể hơn cho lỗi 429 ===
+          // === CHỈNH SỬA: Tăng thời gian đợi khi gặp lỗi 429 ===
           if (error.response && error.response.status === 429) {
             sendLog(`⚠️ Lỗi 429 (Too Many Requests) khi like bài ${task.postId}. Đợi lâu hơn...`);
             retryCount++;
             if (retryCount <= maxRetries) {
-              // Đợi lâu hơn khi gặp lỗi 429: 10s, 15s, 20s
-              const cooldownDelay = 10000 + (retryCount * 5000);
+              // Đợi lâu hơn khi gặp lỗi 429: 15s, 30s, 45s
+              const cooldownDelay = 15000 + (retryCount * 15000);
               sendLog(`Đang làm mát (cooling down) trong ${cooldownDelay/1000} giây...`);
               await this.sleep(cooldownDelay);
               continue;

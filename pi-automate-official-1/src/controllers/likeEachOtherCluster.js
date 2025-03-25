@@ -319,7 +319,7 @@ class LikeEachOtherManager extends ClusterManager {
           totalPosts += allUserPosts[uid].length;
         } else {
           // Tìm thông tin tài khoản để hiển thị
-          const account = validAccounts.find(acc => acc.uid === uid);
+          const account = validAccounts.find(acc => acc.uid == uid);
           if (account) {
             accountsWithoutPosts.push(account.piname);
           }
@@ -348,8 +348,8 @@ class LikeEachOtherManager extends ClusterManager {
         console.warn(`⚠️ Mỗi tài khoản sẽ chỉ có thể like tối đa ${accountsWithPosts - 1} bài`);
       }
       
-      // === VỊ TRÍ 6: PHÂN PHỐI HỢP LÝ TÀI KHOẢN CHO WORKER ===
-      // [THAY ĐỔI] Chia tài khoản cho các worker hợp lý hơn
+      // === CHỈNH SỬA: CẢI THIỆN PHÂN PHỐI NHIỆM VỤ LIKE ===
+      // Chia tài khoản cho các worker, chỉ sử dụng đủ số worker cần thiết
       // Mỗi worker nên xử lý ít nhất 10 tài khoản để tránh lãng phí
       const minAccountsPerWorker = 10;
       const idealWorkerCount = Math.max(1, Math.min(
@@ -378,81 +378,114 @@ class LikeEachOtherManager extends ClusterManager {
         });
       }
       
+      // Tạo danh sách nhiệm vụ like dựa trên likeDistribution
+      const allLikeTasks = [];
+      
+      for (const user of validAccounts) {
+        if (!user || !user.uid) {
+          console.warn(`Bỏ qua tài khoản không hợp lệ:`, user);
+          continue;
+        }
+        
+        // Lấy danh sách tài khoản cần like từ bản đồ phân phối
+        const targetsToLike = this.likeDistribution.get(user.uid) || [];
+        
+        if (targetsToLike.length === 0) {
+          console.warn(`Tài khoản ${user.piname} không có target nào để like`);
+          continue;
+        }
+        
+        for (const target of targetsToLike) {
+          if (!target || !target.targetUid) {
+            console.warn(`Bỏ qua target không hợp lệ cho user ${user.piname}:`, target);
+            continue;
+          }
+          
+          // Lấy bài viết đầu tiên của người dùng đích để like
+          const targetPosts = allUserPosts[target.targetUid] || [];
+          if (targetPosts.length === 0) {
+            console.warn(`Không tìm thấy bài viết nào của tài khoản ${target.targetPiname} để like`);
+            continue;
+          }
+          
+          // Chọn bài viết đầu tiên để like
+          const postToLike = targetPosts[0];
+          if (!postToLike) {
+            console.warn(`Bài viết của tài khoản ${target.targetPiname} không hợp lệ`);
+            continue;
+          }
+          
+          allLikeTasks.push({
+            sourceUid: user.uid,
+            sourcePiname: user.piname,
+            targetUid: target.targetUid,
+            targetPiname: target.targetPiname,
+            postId: postToLike
+          });
+        }
+      }
+      
+      // Tổng số nhiệm vụ like
+      console.log(`Tạo được ${allLikeTasks.length} nhiệm vụ like tổng cộng`);
+      
+      if (allLikeTasks.length === 0) {
+        throw new Error("Không tạo được nhiệm vụ like nào! Quá trình sẽ dừng lại.");
+      }
+      
+      // === CHỈNH SỬA: Phân phối nhiệm vụ like tối ưu hơn ===
+      // Phân nhóm nhiệm vụ theo sourceUid (người thực hiện like)
+      const tasksBySource = new Map();
+      allLikeTasks.forEach(task => {
+        if (!tasksBySource.has(task.sourceUid)) {
+          tasksBySource.set(task.sourceUid, []);
+        }
+        tasksBySource.get(task.sourceUid).push(task);
+      });
+      
+      // Tạo các worker batches, phân tán nhiệm vụ của cùng một người dùng
+      const workerBatches = Array.from({length: workersToUse.length}, () => []);
+      
+      // Lấy số lượng nhiệm vụ lớn nhất của một người dùng
+      let maxTasksPerUser = 0;
+      tasksBySource.forEach(tasks => {
+        maxTasksPerUser = Math.max(maxTasksPerUser, tasks.length);
+      });
+      
+      console.log(`Mỗi người dùng có tối đa ${maxTasksPerUser} nhiệm vụ like`);
+      
+      // Phân phối theo round-robin cho từng nguồn
+      for (let round = 0; round < maxTasksPerUser; round++) {
+        let workerIndex = round % workersToUse.length;
+        
+        // Với mỗi vòng, lấy nhiệm vụ thứ 'round' của mỗi người dùng
+        for (const [sourceUid, tasks] of tasksBySource.entries()) {
+          if (round < tasks.length) {
+            workerBatches[workerIndex].push(tasks[round]);
+            workerIndex = (workerIndex + 1) % workersToUse.length;
+          }
+        }
+      }
+      
+      console.log(`Đã phân phối nhiệm vụ like cho ${workersToUse.length} worker`);
+      
+      // Phân phối tài khoản cho các worker
       const accountsPerWorker = Math.max(1, Math.ceil(validAccounts.length / workersToUse.length));
-      console.log(`Mỗi worker sẽ xử lý khoảng ${accountsPerWorker} tài khoản`);
       
       let totalTasks = 0;
       let workerWithTasks = 0;
       
+      // Gán tài khoản và nhiệm vụ like cho các worker
       for (let i = 0; i < workersToUse.length; i++) {
         const worker = workersToUse[i];
         const startIndex = i * accountsPerWorker;
         const endIndex = Math.min(startIndex + accountsPerWorker, validAccounts.length);
         
-        if (startIndex >= validAccounts.length) {
-          console.log(`Worker ${worker.process.pid} không được phân công tài khoản nào`);
-          worker.send({
-            type: 'like-tasks',
-            data: {
-              accounts: [],
-              likeTasks: [],
-              userPosts: {}
-            }
-          });
-          continue;
-        }
-        
+        // Lấy danh sách tài khoản cho worker này
         const workerAccounts = validAccounts.slice(startIndex, endIndex);
         
-        // Tạo nhiệm vụ like cho các tài khoản được phân công cho worker này
-        const likeTasks = [];
-        let workerTaskCount = 0;
-        
-        for (const user of workerAccounts) {
-          if (!user || !user.uid) {
-            console.warn(`Bỏ qua tài khoản không hợp lệ:`, user);
-            continue;
-          }
-          
-          // Lấy danh sách tài khoản cần like từ bản đồ phân phối
-          const targetsToLike = this.likeDistribution.get(user.uid) || [];
-          
-          if (targetsToLike.length === 0) {
-            console.warn(`Tài khoản ${user.piname} không có target nào để like`);
-            continue;
-          }
-          
-          for (const target of targetsToLike) {
-            if (!target || !target.targetUid) {
-              console.warn(`Bỏ qua target không hợp lệ cho user ${user.piname}:`, target);
-              continue;
-            }
-            
-            // Lấy bài viết đầu tiên của người dùng đích để like
-            const targetPosts = allUserPosts[target.targetUid] || [];
-            if (targetPosts.length === 0) {
-              console.warn(`Không tìm thấy bài viết nào của tài khoản ${target.targetPiname} để like`);
-              continue;
-            }
-            
-            // Chọn bài viết đầu tiên để like
-            const postToLike = targetPosts[0];
-            if (!postToLike) {
-              console.warn(`Bài viết của tài khoản ${target.targetPiname} không hợp lệ`);
-              continue;
-            }
-            
-            likeTasks.push({
-              sourceUid: user.uid,
-              sourcePiname: user.piname,
-              targetUid: target.targetUid,
-              targetPiname: target.targetPiname,
-              postId: postToLike
-            });
-            
-            workerTaskCount++;
-          }
-        }
+        // Lấy nhiệm vụ like cho worker này
+        const likeTasks = workerBatches[i];
+        const workerTaskCount = likeTasks.length;
         
         totalTasks += workerTaskCount;
         
@@ -507,6 +540,7 @@ class LikeEachOtherManager extends ClusterManager {
       }
       
       console.log(`Đã phân phối tổng cộng ${totalTasks} nhiệm vụ like cho ${workerWithTasks} worker`);
+      console.log(`Mỗi worker xử lý trung bình ${Math.round(totalTasks/workerWithTasks)} nhiệm vụ like`);
       
       // Cập nhật tổng số tác vụ
       this.results.total = totalTasks;
@@ -556,9 +590,9 @@ class LikeEachOtherManager extends ClusterManager {
       // Xử lý song song để tăng tốc quá trình lấy bài viết
       console.log("Bắt đầu lấy bài viết cho tất cả tài khoản (có thể mất vài phút)...");
       
-      // === THÊM MỚI: GIẢM KHẢ NĂNG BỊ LỖI 429 ===
+      // === CHỈNH SỬA: GIẢM KHẢ NĂNG BỊ LỖI 429 ===
       // Giảm số lượng tài khoản trong mỗi lô và thêm delay giữa các request
-      const BATCH_SIZE = 20; // [THAY ĐỔI] Giảm từ 50 xuống 20 tài khoản mỗi lô
+      const BATCH_SIZE = 10; // [CHỈNH SỬA] Giảm từ 20 xuống 10 tài khoản mỗi lô
       const batches = [];
       
       for (let i = 0; i < accounts.length; i += BATCH_SIZE) {
@@ -571,9 +605,9 @@ class LikeEachOtherManager extends ClusterManager {
       for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
         const batch = batches[batchIndex];
         
-        // === THÊM MỚI: Thêm delay giữa các lô để tránh lỗi 429 ===
+        // === CHỈNH SỬA: Tăng delay giữa các lô để tránh lỗi 429 ===
         if (batchIndex > 0) {
-          const batchDelay = 3000; // 3 giây delay giữa các lô
+          const batchDelay = 500 + Math.floor(Math.random() * 1100); // 6-10 giây delay giữa các lô
           console.log(`Đợi ${batchDelay/1000} giây trước khi xử lý lô tiếp theo để tránh lỗi 429...`);
           await new Promise(resolve => setTimeout(resolve, batchDelay));
         }
@@ -586,9 +620,9 @@ class LikeEachOtherManager extends ClusterManager {
               return { user, error: "Tài khoản không hợp lệ" };
             }
             
-            // === THÊM MỚI: Thêm delay giữa các request trong lô ===
-            // Delay ngẫu nhiên từ 100ms đến 500ms giữa các request trong cùng lô
-            const inBatchDelay = 100 + Math.floor(Math.random() * 400);
+            // === CHỈNH SỬA: Tăng delay giữa các request trong lô ===
+            // Delay từ 500ms đến 1.5s giữa các request trong cùng lô
+            const inBatchDelay = 500 + Math.floor(Math.random() * 1000);
             await new Promise(resolve => setTimeout(resolve, inBatchDelay * userIndex));
             
             try {
@@ -604,11 +638,11 @@ class LikeEachOtherManager extends ClusterManager {
                 return { user, posts: [] };
               }
             } catch (error) {
-              // === THÊM MỚI: Xử lý lỗi 429 riêng biệt ===
+              // === CHỈNH SỬA: Xử lý lỗi 429 với thời gian chờ lâu hơn ===
               if (error.response && error.response.status === 429) {
                 console.warn(`⚠️ Lỗi 429 (Too Many Requests) khi lấy bài viết cho ${user.piname}. Đợi thêm...`);
-                // Đợi thêm 5 giây khi gặp lỗi 429
-                await new Promise(resolve => setTimeout(resolve, 5000));
+                // Đợi thêm 10 giây khi gặp lỗi 429 (tăng từ 5 giây)
+                await new Promise(resolve => setTimeout(resolve, 10000));
                 try {
                   // Thử lại một lần nữa sau khi đợi
                   const retryPosts = await getUserPosts(user);
@@ -619,6 +653,22 @@ class LikeEachOtherManager extends ClusterManager {
                     };
                   }
                 } catch (retryError) {
+                  // Nếu vẫn lỗi 429 sau khi thử lại, đợi thêm 15 giây và thử lần nữa
+                  if (retryError.response && retryError.response.status === 429) {
+                    console.warn(`⚠️ Vẫn gặp lỗi 429 cho ${user.piname}, đợi thêm 15 giây và thử lại lần cuối...`);
+                    await new Promise(resolve => setTimeout(resolve, 15000));
+                    try {
+                      const finalRetryPosts = await getUserPosts(user);
+                      if (finalRetryPosts && finalRetryPosts.length > 0) {
+                        return { 
+                          user,
+                          posts: [finalRetryPosts[0]]
+                        };
+                      }
+                    } catch (finalError) {
+                      return { user, error: `Lỗi sau 3 lần thử: ${finalError.message}` };
+                    }
+                  }
                   return { user, error: `Lỗi khi thử lại: ${retryError.message}` };
                 }
               }
@@ -656,6 +706,13 @@ class LikeEachOtherManager extends ClusterManager {
           const elapsed = Math.round((currentTime - startTime) / 1000);
           console.log(`Tiến độ: ${progress}% (${batchIndex + 1}/${batches.length} lô) | Thời gian: ${elapsed}s | Tìm thấy ${successCount} tài khoản có bài viết`);
           lastProgressUpdate = currentTime;
+        }
+        
+        // === CHỈNH SỬA: Thêm nghỉ bổ sung sau mỗi lô để tránh lỗi 429 ===
+        if (batchIndex < batches.length - 1) {
+          const cooldownDelay = 100 + Math.floor(Math.random() * 500); // 3-5 giây
+          console.log(`Đợi thêm ${cooldownDelay/1000} giây trước khi tiếp tục...`);
+          await new Promise(resolve => setTimeout(resolve, cooldownDelay));
         }
       }
       
@@ -824,33 +881,34 @@ async function handleLikeEachOtherWithCluster(req) {
       console.log(`>> Máy tính có ${availableCores} CPU cores`);
       
       // === VỊ TRÍ 1: ĐIỀU CHỈNH SỐ LƯỢNG WORKER ===
-      // [THAY ĐỔI] Tính số lượng worker dựa trên số core và dự kiến số tài khoản
+      // [CHỈNH SỬA] Tính số lượng worker dựa trên số core và dự kiến số tài khoản
       // Nên có 1 worker cho mỗi 50-100 tài khoản để tránh lãng phí tài nguyên
       const accountEstimate = 100; // Ước tính số tài khoản (có thể đọc từ Excel trước)
       const workerCount = Math.min(
-        Math.max(1, availableCores - 1), // Không vượt quá số core - 1
+        Math.max(1, Math.ceil(availableCores / 2)), // Sử dụng tối đa 1/2 số core
         Math.ceil(accountEstimate / 50)  // 1 worker xử lý khoảng 50 tài khoản
       );
       console.log(`>> Khởi tạo ${workerCount} worker processes (tối ưu cho khoảng ${accountEstimate} tài khoản)...`);
       
       // === VỊ TRÍ 2: ĐIỀU CHỈNH MAX_CONCURRENCY ===
-      // [THAY ĐỔI] Giảm giới hạn đồng thời xuống giá trị hợp lý hơn
-      // Nên để 20-50 thay vì 200 để tránh quá tải và request bị từ chối
-      let maxConcurrency = 50; // [THAY ĐỔI] Giảm từ 200 xuống 50
+      // [CHỈNH SỬA] Giảm giới hạn đồng thời xuống giá trị hợp lý hơn
+      // Nên để 20-30 thay vì 50 để tránh quá tải và request bị từ chối
+      let maxConcurrency = 20; // [CHỈNH SỬA] Giảm từ 50 xuống 20
       if (process.env.MAX_CONCURRENCY) {
         const parsedValue = parseInt(process.env.MAX_CONCURRENCY, 10);
         if (!isNaN(parsedValue) && parsedValue > 0) {
-          maxConcurrency = parsedValue;
+          maxConcurrency = Math.min(parsedValue, 30); // Giới hạn không quá 30
         }
       }
       
       console.log(`>> Giới hạn đồng thời: ${maxConcurrency} tác vụ`);
       
       // === THÊM MỚI: Cảnh báo về rate limits và lỗi 429 ===
-      console.log("\n⚠️ CHÚ Ý VỀ RATE LIMIT ⚠️");
-      console.log("Hệ thống đã được cấu hình để tránh lỗi 429 (Too Many Requests)");
-      console.log("Tiến trình sẽ chạy chậm hơn nhưng ổn định hơn, tránh bị block request");
-      console.log("Nếu vẫn gặp lỗi 429, hãy giảm thêm thông số concurrency hoặc tăng delay giữa các request\n");
+      console.log("\n⚠️ CHÚ Ý: ĐÃ ĐIỀU CHỈNH CHẬM LIKE XUỐNG ⚠️");
+      console.log("Hệ thống đã được cấu hình để CHẬM LẠI, tránh lỗi 429 (Too Many Requests)");
+      console.log("Tiến trình sẽ chạy chậm hơn trước, nhưng ổn định hơn và tránh bị block request");
+      console.log("Mỗi lượt like sẽ có delay 3-5 giây trước và 1.5-3 giây sau để tránh bị chặn");
+      console.log("Các nhóm nhiệm vụ sẽ được xử lý lần lượt với 5-8 giây nghỉ giữa các nhóm\n");
       
       // Khởi tạo manager cho like chéo
       const likeManager = new LikeEachOtherManager({ 
@@ -874,7 +932,7 @@ async function handleLikeEachOtherWithCluster(req) {
       let processTimeout = null;
       
       // === VỊ TRÍ 3: CƠ CHẾ PHÁT HIỆN TIẾN TRÌNH KẸT ===
-      // [THAY ĐỔI] Theo dõi tiến trình để phát hiện khi bị kẹt và dừng
+      // [CHỈNH SỬA] Theo dõi tiến trình để phát hiện khi bị kẹt và dừng
       const progressMonitor = setInterval(() => {
         const currentProgress = likeManager.results.completed || 0;
         const totalTasks = likeManager.results.total || 0;
@@ -898,9 +956,9 @@ async function handleLikeEachOtherWithCluster(req) {
         // Kiểm tra tiến trình bị kẹt
         if (currentProgress === lastProgress && currentProgress > 0) {
           stuckCounter++;
-          if (stuckCounter >= 5) { // Nếu không có tiến triển trong 5 lần kiểm tra liên tiếp (25 giây)
+          if (stuckCounter >= 4) { // Giảm từ 5 xuống 4 lần kiểm tra liên tiếp (20 giây)
             console.warn(`⚠️ Phát hiện tiến trình có thể bị kẹt! Không có tiến triển mới trong ${stuckCounter * 5} giây.`);
-            if (stuckCounter >= 12) { // 1 phút không có tiến triển
+            if (stuckCounter >= 8) { // Giảm từ 12 xuống 8 (40 giây không có tiến triển)
               console.error(`❌ Tiến trình bị kẹt quá lâu, bắt đầu kết thúc...`);
               clearInterval(progressMonitor);
               
@@ -962,8 +1020,9 @@ async function handleLikeEachOtherWithCluster(req) {
           console.log(">> Bắt đầu phân bổ nhiệm vụ like chéo...");
           
           // === VỊ TRÍ 4: THIẾT LẬP TIMEOUT ===
-          // [THAY ĐỔI] Thiết lập timeout tổng thể từ 15 xuống 10 phút
-          const timeoutMinutes = 10;
+          // [CHỈNH SỬA] Thiết lập timeout tổng thể từ 10 lên 15 phút do đã làm chậm quá trình
+          const timeoutMinutes = 15;
+          console.log(`⏱️ Thiết lập thời gian tối đa cho quá trình: ${timeoutMinutes} phút`);
           processTimeout = setTimeout(() => {
             if (!isProcessingComplete) {
               timeoutTriggered = true;
